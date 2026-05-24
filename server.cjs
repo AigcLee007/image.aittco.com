@@ -26,12 +26,24 @@ const app = express();
 const PORT = 3325;
 
 // 涓婃父 API 閰嶇疆
-const UPSTREAM_URL = "https://api.bltcy.ai";
+const UPSTREAM_URL = (
+  process.env.UPSTREAM_URL ||
+  process.env.AITTCO_UPSTREAM_URL ||
+  "https://max.aittco.com"
+).replace(/\/$/, "");
 const SHARED_HTTPS_AGENT = new https.Agent({
   keepAlive: true,
   maxSockets: 100,
   family: 4,
 });
+const POLLING_HTTPS_AGENT = new https.Agent({
+  keepAlive: false,
+  maxSockets: 20,
+  family: 4,
+});
+const asyncTaskPayloadStore = new Map();
+const asyncTaskAliasStore = new Map();
+const MAX_ASYNC_RESULT_RETRIES = 1;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const isRetryableNetworkError = (error) => {
@@ -44,6 +56,8 @@ const isRetryableNetworkError = (error) => {
     code === "ECONNABORTED" ||
     code === "ETIMEDOUT" ||
     code === "EAI_AGAIN" ||
+    message.includes("bad record mac") ||
+    message.includes("decryption failed") ||
     message.includes("client network socket disconnected before secure tls connection was established") ||
     message.includes("socket hang up")
   );
@@ -68,6 +82,76 @@ const requestWithRetry = async (
       attempt += 1;
     }
   }
+};
+
+const extractTaskIdFromResponse = (payload) => {
+  if (!payload || typeof payload !== "object") return null;
+  if (typeof payload.id === "string" && payload.id) return payload.id;
+  if (typeof payload.task_id === "string" && payload.task_id) return payload.task_id;
+  if (typeof payload.data === "string" && payload.data) return payload.data;
+  if (payload.data && typeof payload.data.task_id === "string" && payload.data.task_id) {
+    return payload.data.task_id;
+  }
+  return null;
+};
+
+const resolveAliasedTaskId = (taskId) => {
+  let current = taskId;
+  const visited = new Set();
+  while (asyncTaskAliasStore.has(current) && !visited.has(current)) {
+    visited.add(current);
+    current = asyncTaskAliasStore.get(current);
+  }
+  return current;
+};
+
+const shouldRetryAsyncResultFailure = (payload) => {
+  const failReason = String(
+    payload?.fail_reason ||
+    payload?.data?.fail_reason ||
+    payload?.error?.message ||
+    payload?.result?.error ||
+    payload?.data?.error ||
+    "",
+  ).toLowerCase();
+  return failReason.includes("upload image async result object") && failReason.includes("status 403");
+};
+
+const summarizeTaskPayload = (payload) => {
+  const summary = {
+    status: payload?.status || payload?.state || null,
+    fail_reason: payload?.fail_reason || payload?.data?.fail_reason || null,
+    error:
+      payload?.error?.message ||
+      payload?.error ||
+      payload?.data?.error ||
+      payload?.result?.error ||
+      null,
+    model: payload?.model || payload?.properties?.model || payload?.data?.model || null,
+    url: payload?.url || payload?.image_url || null,
+    outputCount: 0,
+    outputsPreview: [],
+  };
+
+  const urls = [];
+  const walk = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+    if (typeof value !== "object") return;
+    if (typeof value.url === "string") urls.push(value.url);
+    if (typeof value.image_url === "string") urls.push(value.image_url);
+    if (typeof value.output === "string" && value.output.startsWith("http")) urls.push(value.output);
+    Object.values(value).forEach(walk);
+  };
+  walk(payload);
+
+  const uniqueUrls = Array.from(new Set(urls));
+  summary.outputCount = uniqueUrls.length;
+  summary.outputsPreview = uniqueUrls.slice(0, 3);
+  return summary;
 };
 
 // Security Middleware
@@ -168,7 +252,7 @@ app.get("/api/balance/info", async (req, res) => {
     const usageData = usageRes.data;
 
     // 绉垎璁＄畻鍏紡: 1 USD = 25 閲戝竵
-    const POINTS_MULTIPLIER = 25;
+    const POINTS_MULTIPLIER = 12.5;
     let totalQuotaUsd = parseFloat(subData.hard_limit_usd || 0);
     let usedAmountUsd = 0;
     if (usageData && usageData.total_usage !== undefined) {
@@ -371,8 +455,8 @@ app.post("/api/generate", generateLimiter, async (req, res) => {
       grokImageDebug,
     });
 
-    const upstreamUrl = isSyncLine 
-      ? `${UPSTREAM_URL}/v1/chat/completions` 
+    const upstreamUrl = isSyncLine
+      ? `${UPSTREAM_URL}/v1/chat/completions`
       : `${UPSTREAM_URL}/v1/images/generations?async=true`;
 
     // 濡傛灉鏄悓姝ョ嚎璺紙Chat 鎺ュ彛锛夛紝杞崲璇锋眰浣?
@@ -437,6 +521,13 @@ app.post("/api/generate", generateLimiter, async (req, res) => {
     }
 
     console.log("[Generate] Upstream response:", response.data);
+    const submittedTaskId = extractTaskIdFromResponse(response.data);
+    if (submittedTaskId && !isSyncLine) {
+      asyncTaskPayloadStore.set(submittedTaskId, {
+        payload: JSON.parse(JSON.stringify(finalRequestBody)),
+        retries: 0,
+      });
+    }
     res.json(response.data);
   } catch (error) {
     console.error("[Generate] Error:", error.message);
@@ -640,24 +731,82 @@ app.get("/api/task/:taskId", pollingLimiter, async (req, res) => {
     }
 
     const { taskId } = req.params;
+    const resolvedTaskId = resolveAliasedTaskId(taskId);
 
     const response = await requestWithRetry(
       () =>
         axios.get(
-          `${UPSTREAM_URL}/v1/images/tasks/${taskId}`,
+          `${UPSTREAM_URL}/v1/images/tasks/${resolvedTaskId}`,
           {
             headers: {
               Authorization: userKey,
               "Content-Type": "application/json",
             },
             timeout: 10000,
-            httpsAgent: SHARED_HTTPS_AGENT,
+            httpsAgent: POLLING_HTTPS_AGENT,
           },
         ),
-      { retries: 2, delayMs: 350, label: "task-poll" },
+      { retries: 3, delayMs: 500, label: "task-poll" },
     );
 
-    res.json(response.data);
+    const taskPayload = response.data;
+    console.log("[Task Poll] Summary:", {
+      requestedTaskId: taskId,
+      resolvedTaskId,
+      ...summarizeTaskPayload(taskPayload),
+    });
+    const statusRaw = String(taskPayload?.status || taskPayload?.state || "").toUpperCase();
+    const isFailedStatus =
+      statusRaw === "FAILURE" ||
+      statusRaw === "FAILED" ||
+      statusRaw === "ERROR" ||
+      statusRaw === "CANCELLED" ||
+      statusRaw === "CANCELED";
+
+    if (isFailedStatus && shouldRetryAsyncResultFailure(taskPayload)) {
+      const stored = asyncTaskPayloadStore.get(resolvedTaskId);
+      if (stored && (stored.retries || 0) < MAX_ASYNC_RESULT_RETRIES) {
+        console.warn(`[Task Poll] Async result upload failed for ${resolvedTaskId}, retrying submission`);
+        const retryResponse = await requestWithRetry(
+          () =>
+            axios.post(
+              `${UPSTREAM_URL}/v1/images/generations?async=true`,
+              stored.payload,
+              {
+                headers: {
+                  Authorization: userKey,
+                  "Content-Type": "application/json",
+                },
+                timeout: 600000,
+                httpsAgent: SHARED_HTTPS_AGENT,
+              },
+            ),
+          { retries: 1, delayMs: 700, label: "task-resubmit" },
+        );
+        const newTaskId = extractTaskIdFromResponse(retryResponse.data);
+        if (newTaskId) {
+          const rootTaskId = taskId;
+          asyncTaskAliasStore.set(rootTaskId, newTaskId);
+          asyncTaskAliasStore.set(resolvedTaskId, newTaskId);
+          asyncTaskPayloadStore.set(newTaskId, {
+            payload: stored.payload,
+            retries: (stored.retries || 0) + 1,
+          });
+          console.log("[Task Poll] Resubmitted async task:", {
+            requestedTaskId: taskId,
+            resolvedTaskId,
+            newTaskId,
+          });
+          return res.json({
+            status: "PROCESSING",
+            state: "PROCESSING",
+            data: { task_id: newTaskId, retried_from: resolvedTaskId },
+          });
+        }
+      }
+    }
+
+    res.json(taskPayload);
   } catch (error) {
     console.error("[Task Poll] Error:", error.message);
 
@@ -681,6 +830,7 @@ app.post("/api/gemini/generate", generateLimiter, async (req, res) => {
     const { aspect_ratio, image_size, thinking_level, output_format } = requestBody;
     const model = requestBody.model || "gemini-3-pro-image-preview";
     const strictNativeConfig = requestBody.strict_native_config === true;
+    const isNanoBananaProLine1 = model === "Nano_Banana_Pro";
     
     // 鐏垫椿鎻愬彇鎻愮ず璇嶏細浼樺厛浠?contents 鎻愬彇锛屽厹搴曚粠 top-level prompt 鎻愬彇
     let prompt = requestBody.prompt;
@@ -694,6 +844,85 @@ app.post("/api/gemini/generate", generateLimiter, async (req, res) => {
     }
 
     console.log(`[Gemini Generate] Model: ${model}, Prompt: ${prompt.substring(0, 30)}...`);
+
+    const requestWithServiceRetry = async (runner, label) => {
+      let lastError;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          return await runner();
+        } catch (error) {
+          lastError = error;
+          const isOverloaded =
+            error?.response?.status === 503 &&
+            String(error?.response?.data?.error?.code || "").toLowerCase() === "system_cpu_overloaded";
+          if (!isOverloaded && !isRetryableNetworkError(error)) {
+            throw error;
+          }
+          if (attempt >= 2) throw error;
+          const wait = isOverloaded ? 1200 * (attempt + 1) : 700 * Math.pow(2, attempt);
+          console.warn(`[Retry] ${label} attempt ${attempt + 1} failed: ${error.message}. Retrying in ${wait}ms`);
+          await sleep(wait);
+        }
+      }
+      throw lastError;
+    };
+
+    if (isNanoBananaProLine1) {
+      const finalImageSize = (requestBody.imageSize || requestBody.image_size || "2K").toUpperCase();
+      if (!["2K", "4K"].includes(finalImageSize)) {
+        return res.status(400).json({ error: "Nano_Banana_Pro only supports 2K or 4K" });
+      }
+
+      const upstreamBody = {
+        model: "Nano_Banana_Pro",
+        prompt,
+        aspect_ratio: aspect_ratio || "1:1",
+        imageSize: finalImageSize,
+        n: requestBody.n || 1,
+      };
+
+      console.log("[Gemini Generate] Nano_Banana_Pro payload:", JSON.stringify(upstreamBody, null, 2));
+
+      const response = await requestWithServiceRetry(
+        () =>
+          axios.post(`${UPSTREAM_URL}/v1/images/generations`, upstreamBody, {
+            headers: {
+              Authorization: userKey,
+              "Content-Type": "application/json",
+            },
+            timeout: 600000,
+            httpsAgent: SHARED_HTTPS_AGENT,
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+          }),
+        "nano-banana-pro-generate",
+      );
+
+      const payload = response.data || {};
+      const resultImages = [];
+      if (Array.isArray(payload.images)) resultImages.push(...payload.images);
+      if (Array.isArray(payload.data)) {
+        payload.data.forEach((item) => {
+          if (item?.url) resultImages.push(item.url);
+          else if (item?.b64_json) resultImages.push(`data:image/png;base64,${item.b64_json}`);
+        });
+      }
+      if (payload.url) resultImages.push(payload.url);
+      if (payload.image_url) resultImages.push(payload.image_url);
+
+      if (resultImages.length === 0) {
+        return res.status(500).json({
+          error: "Nano_Banana_Pro did not return any image result",
+          raw: payload,
+        });
+      }
+
+      return res.json({
+        success: true,
+        images: Array.from(new Set(resultImages)),
+        text: payload.text || undefined,
+      });
+    }
 
     // 鏋勫缓鏈€缁堝彂閫佺粰涓婃父鐨?parts
     const parts = [];
@@ -779,16 +1008,20 @@ app.post("/api/gemini/generate", generateLimiter, async (req, res) => {
 
     let response;
     try {
-      response = await axios.post(GEMINI_ENDPOINT, nativeBody, {
-        headers: {
-          Authorization: userKey,
-          "Content-Type": "application/json",
-        },
-        timeout: 600000,
-        httpsAgent: SHARED_HTTPS_AGENT,
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-      });
+      response = await requestWithServiceRetry(
+        () =>
+          axios.post(GEMINI_ENDPOINT, nativeBody, {
+            headers: {
+              Authorization: userKey,
+              "Content-Type": "application/json",
+            },
+            timeout: 600000,
+            httpsAgent: SHARED_HTTPS_AGENT,
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+          }),
+        "gemini-native-generate",
+      );
     } catch (firstErr) {
       // 濡傛灉 snake_case 鏍煎紡澶辫触锛屽皾璇?camelCase 鏍煎紡
       if (firstErr.response?.status === 400) {
@@ -808,13 +1041,17 @@ app.post("/api/gemini/generate", generateLimiter, async (req, res) => {
         }
         
         try {
-          response = await axios.post(GEMINI_ENDPOINT, camelBody, {
-            headers: { Authorization: userKey, "Content-Type": "application/json" },
-            timeout: 600000,
-            httpsAgent: SHARED_HTTPS_AGENT,
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity,
-          });
+          response = await requestWithServiceRetry(
+            () =>
+              axios.post(GEMINI_ENDPOINT, camelBody, {
+                headers: { Authorization: userKey, "Content-Type": "application/json" },
+                timeout: 600000,
+                httpsAgent: SHARED_HTTPS_AGENT,
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+              }),
+            "gemini-native-generate-camel",
+          );
         } catch (secondErr) {
           // 濡傛灉杩樻槸澶辫触锛屽皾璇曚笉甯?generationConfig
           if (secondErr.response?.status === 400) {
@@ -824,13 +1061,17 @@ app.post("/api/gemini/generate", generateLimiter, async (req, res) => {
             }
             console.log("[Gemini Generate] camelCase also failed, trying without generationConfig...");
             const minimalBody = { contents: nativeBody.contents };
-            response = await axios.post(GEMINI_ENDPOINT, minimalBody, {
-              headers: { Authorization: userKey, "Content-Type": "application/json" },
-              timeout: 600000,
-              httpsAgent: SHARED_HTTPS_AGENT,
-              maxContentLength: Infinity,
-              maxBodyLength: Infinity,
-            });
+            response = await requestWithServiceRetry(
+              () =>
+                axios.post(GEMINI_ENDPOINT, minimalBody, {
+                  headers: { Authorization: userKey, "Content-Type": "application/json" },
+                  timeout: 600000,
+                  httpsAgent: SHARED_HTTPS_AGENT,
+                  maxContentLength: Infinity,
+                  maxBodyLength: Infinity,
+                }),
+              "gemini-native-generate-minimal",
+            );
           } else {
             throw secondErr;
           }
@@ -1050,7 +1291,7 @@ const GEMINI_FALLBACK_MODELS = [
 ];
 
 function buildGeminiGenerateEndpoint(model) {
-  return `https://api.bltcy.ai/v1beta/models/${model}:generateContent`;
+  return `${UPSTREAM_URL}/v1beta/models/${model}:generateContent`;
 }
 
 async function postGeminiWithFallback({

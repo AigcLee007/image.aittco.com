@@ -37,6 +37,12 @@ export const ImageFormConfig: React.FC = () => {
     }
   }, [imageModel, setImageModel]);
 
+  useEffect(() => {
+    if (imageModel === 'nano-banana' && imageLine === 'line1' && imageSize === '1k') {
+      setImageSize('2k');
+    }
+  }, [imageLine, imageModel, imageSize, setImageSize]);
+
   const ratioOptions = [
     { label: '\u667A\u80FD', value: 'Smart' },
     { label: '\u81EA\u5B9A\u4E49', value: 'Custom' },
@@ -54,10 +60,37 @@ export const ImageFormConfig: React.FC = () => {
 
   const isNanoBanana = imageModel === 'nano-banana';
   const isGptImage2 = imageModel === 'gpt-image-2';
-  const nanoBananaCost = imageLine === 'line3' ? 5 : 14;
+  const normalizedImageSize = imageSize.toLowerCase();
+  const nanoBananaCost = imageLine === 'line1'
+    ? 6
+    : imageLine === 'line2'
+      ? 5
+      : imageLine === 'line3'
+        ? 4
+        : normalizedImageSize === '4k'
+          ? 6
+          : 5;
+  const gptImageCost = 3;
   const gridClass = isNanoBanana
     ? 'grid-cols-[1.2fr_1fr_1.2fr_0.8fr] gap-1.5'
     : 'grid-cols-3 gap-1.5';
+  const imageSizeOptions = isGptImage2
+    ? [
+        { value: 'auto', label: 'Auto' },
+        { value: '1k', label: '1K' },
+        { value: '2k', label: '2K' },
+        { value: '4k', label: '4K' },
+      ]
+    : imageLine === 'line1'
+      ? [
+          { value: '2k', label: '2K' },
+          { value: '4k', label: '4K' },
+        ]
+      : [
+          { value: '1k', label: '1K' },
+          { value: '2k', label: '2K' },
+          { value: '4k', label: '4K' },
+        ];
 
   const commitGptCompression = (value: string) => {
     const trimmed = value.trim();
@@ -93,7 +126,7 @@ export const ImageFormConfig: React.FC = () => {
             {
               value: 'gpt-image-2',
               label: 'GPT-image-2',
-              cost: 1,
+              cost: gptImageCost,
               icon: <OpenAILogo />,
             },
           ]}
@@ -126,12 +159,7 @@ export const ImageFormConfig: React.FC = () => {
           <DropUpSelect
             value={imageSize}
             onChange={(val) => setImageSize(val)}
-            options={[
-              ...(isGptImage2 ? [{ value: 'auto', label: 'Auto' }] : []),
-              { value: '1k', label: '1K' },
-              { value: '2k', label: '2K' },
-              { value: '4k', label: '4K' },
-            ]}
+            options={imageSizeOptions}
           />
         </div>
 

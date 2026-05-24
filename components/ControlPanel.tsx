@@ -2,7 +2,7 @@
 import { AppStatus, NodeData, ToolMode } from '../types';
 import { useSelectionStore, type ReferenceImage } from '../src/store/selectionStore';
 import { useCanvasStore } from '../src/store/canvasStore';
-import { generateImageApi, getModelBySize, generateGeminiImage, editImageApi } from '../services/api'; // Use new API
+import { generateImageApi, getModelBySize, editImageApi } from '../services/api'; // Use new API
 import { generateVideo } from '../services/videoService';
 import { assetStorage } from '../src/services/assetStorage';
 import { optimizePrompt, PromptOption } from '../services/promptService';
@@ -681,7 +681,7 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
       effectiveRatio = customRatio;
     }
 
-    // Auto-append ratio argument to prompt for model compatibility (double safety)
+    // Normalize ratios for models that only support a fixed set of native aspect ratios.
     const LINE2_SUPPORTED_RATIOS = ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9'];
     const normalizeLine2Ratio = (ratio: string): string => {
       if (!/^\d+:\d+$/.test(ratio)) return ratio;
@@ -702,36 +702,29 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
       return best;
     };
 
-    const getLine3NanoModelBySize = (size: string) => {
-      const normalized = size.toLowerCase();
-      if (normalized === '4k') return 'gemini-3.1-flash-image-preview-4k';
-      if (normalized === '2k') return 'gemini-3.1-flash-image-preview-2k';
-      return 'gemini-3.1-flash-image-preview';
-    };
-
     const getModelName = () => {
       if (imageModel === 'gpt-image-2') {
         return 'gpt-image-2';
       }
       if (imageModel === 'nano-banana') {
         if (imageLine === 'line2') return 'gemini-3-pro-image-preview';
-        if (imageLine === 'line3') return getLine3NanoModelBySize(imageSize);
-        return getModelBySize(imageSize);
+        if (imageLine === 'line3') return 'gemini-3.1-flash-image-preview';
+        return 'Nano_Banana_Pro';
       }
       // Legacy image models are removed from UI; always fall back to Nano Banana Pro route.
-      return getModelBySize(imageSize);
+      return 'Nano_Banana_Pro';
     };
 
     const modelName = getModelName();
-    const shouldUseGeminiNativeSync = imageModel === 'nano-banana' && imageLine === 'line2';
-    if (shouldUseGeminiNativeSync) {
+    const shouldUseAsyncImageApi = imageModel === 'nano-banana';
+    if (shouldUseAsyncImageApi && (imageLine === 'line2' || imageLine === 'line3')) {
       effectiveRatio = normalizeLine2Ratio(effectiveRatio);
     }
 
     const isGptImage2Model = imageModel === 'gpt-image-2';
     const promptWithoutAr = parsedPrompt.replace(/\s*--ar\s*\d+\s*[:：]\s*\d+/gi, '').trim();
     const promptWithRatio = `${promptWithoutAr} --ar ${effectiveRatio}`;
-    const currentPrompt = isGptImage2Model ? promptWithoutAr : promptWithRatio;
+    const currentPrompt = (isGptImage2Model || shouldUseAsyncImageApi) ? promptWithoutAr : promptWithRatio;
     // Decision Logic:
     // User explicitly requested NO "Regenerate" / "Edit Mode".
     // Panel always functions as "Create New". References must be added manually.
@@ -836,147 +829,7 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
       }
     } else {
 
-      // Gemini native sync path.
-      if (shouldUseGeminiNativeSync) {
-        const placeholderIds = onInitGenerations(quantity, currentPrompt, effectiveRatio);
-        const mapSize = (s: string) => {
-          const lower = s.toLowerCase();
-          if (lower === '1k') return '1K';
-          if (lower === '2k') return '2K';
-          if (lower === '4k') return '4K';
-          return '1K';
-        };
-
-        const executeGeminiCall = async () => {
-          try {
-            const parts: any[] = [{ text: currentPrompt }];
-            
-            if (effectiveReferenceImages.length > 0) {
-              const srcs = effectiveReferenceImages.map(r => r.src);
-              for (const src of srcs) {
-                // Get clean base64 data (without prefix)
-                let base64Data = '';
-                let mimeType = 'image/jpeg';
-                
-                if (src.startsWith('data:')) {
-                  const match = src.match(/^data:([^;]+);base64,(.+)$/);
-                  if (match) {
-                    mimeType = match[1];
-                    base64Data = match[2];
-                  }
-                } else {
-                  // If it's a URL or blob URL, we need to fetch it first
-                  try {
-                    const res = await fetch(src);
-                    const blob = await res.blob();
-                    mimeType = blob.type;
-                    const reader = new FileReader();
-                    base64Data = await new Promise((resolve) => {
-                      reader.onloadend = () => {
-                        const result = reader.result as string;
-                        resolve(result.split(',')[1]);
-                      };
-                      reader.readAsDataURL(blob);
-                    });
-                  } catch (e) {
-                      console.error("Failed to fetch reference image for Gemini native call", e);
-                  }
-                }
-
-                if (base64Data) {
-                  parts.push({
-                    inlineData: {
-                      mimeType: mimeType,
-                      data: base64Data
-                    }
-                  });
-                }
-              }
-            }
-
-            const payload: any = {
-              model: modelName,
-              prompt: currentPrompt, // Added as fallback for proxy validation
-              aspect_ratio: effectiveRatio,
-              image_size: mapSize(imageSize),
-              strict_native_config: true,
-              n: quantity,
-              contents: [
-                {
-                  role: "user",
-                  parts: parts
-                }
-              ],
-              generationConfig: {
-                imageConfig: {
-                  aspectRatio: effectiveRatio,
-                  imageSize: mapSize(imageSize)
-                },
-                candidateCount: quantity
-              }
-            };
-
-            const res: any = await generateGeminiImage(apiKey, payload);
-            console.log("[Gemini Native] Response received:", res);
-            
-            const generatedImages: string[] = [];
-            
-            // 1. Handle native Gemini format (candidates array)
-            if (res.candidates && Array.isArray(res.candidates)) {
-              res.candidates.forEach((cand: any) => {
-                const parts = cand.content?.parts;
-                if (parts && Array.isArray(parts)) {
-                  parts.forEach((part: any) => {
-                    // Handle both camelCase and snake_case
-                    const inlineData = part.inlineData || part.inline_data;
-                    if (inlineData && inlineData.data) {
-                      const mimeType = inlineData.mimeType || inlineData.mime_type || 'image/png';
-                      generatedImages.push(`data:${mimeType};base64,${inlineData.data}`);
-                    }
-                  });
-                }
-              });
-            } 
-            // 2. Handle proxy format ({success: true, images: [...]})
-            else if (res.images && Array.isArray(res.images)) {
-              generatedImages.push(...res.images);
-            }
-            // 3. Handle OpenAI-like format ({data: [{url: ...}]})
-            else if (res.data && Array.isArray(res.data)) {
-               res.data.forEach((item: any) => {
-                  if (item.url) generatedImages.push(item.url);
-                  else if (item.b64_json) generatedImages.push(`data:image/png;base64,${item.b64_json}`);
-               });
-            }
-
-            if (generatedImages.length > 0) {
-              generatedImages.forEach((imgData, idx) => {
-                if (placeholderIds[idx]) {
-                  onUpdateGeneration(placeholderIds[idx], imgData);
-                }
-              });
-              // Fail remaining placeholders if any
-              if (generatedImages.length < quantity) {
-                for (let i = generatedImages.length; i < quantity; i++) {
-                   onUpdateGeneration(placeholderIds[i], null, "未返回足够的生成结果");
-                }
-              }
-            } else {
-              // Try to find error message in various formats
-              const errorMsg = res.error?.message || 
-                               res.error || 
-                               (res.candidates?.[0]?.finishReason ? `生成终止: ${res.candidates[0].finishReason}` : null) ||
-                               "接口未返回生成结果（或图片生成被安全拦截）";
-              throw new Error(errorMsg);
-            }
-          } catch (err: any) {
-            console.error("Gemini Native Call Error:", err);
-            placeholderIds.forEach(pid => onUpdateGeneration(pid, null, err.message || "生成异常"));
-          }
-        };
-
-        executeGeminiCall();
-      } else if (effectiveReferenceImages.length > 0) {
+      if (effectiveReferenceImages.length > 0) {
         // Extract srcs from ReferenceImage objects
 	        const refSrcs = effectiveReferenceImages.map(r => r.src);
 	        const isDoubao = modelName.startsWith('doubao');
@@ -987,15 +840,26 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
           for (let reqIdx = 0; reqIdx < quantity; reqIdx++) {
             const placeholderIds = onInitGenerations(perRequestImageCount, currentPrompt, effectiveRatio);
             const promptForModel = getGrokPrompt(customPrompt || currentPrompt, modelName);
-            const payload: any = {
-              model: modelName,
-              prompt: promptForModel,
-              size: getEffectiveSize(modelName),
-              aspect_ratio: effectiveRatio,
-              n: 1,
-              ...(isSyncMode ? { isSync: true } : {}),
-              ...imagePayload
-            };
+            const payload: any = imageModel === 'nano-banana'
+              ? {
+                  model: modelName,
+                  prompt: currentPrompt,
+                  aspect_ratio: effectiveRatio,
+                  imageSize: imageLine === 'line1'
+                    ? (imageSize.toLowerCase() === '4k' ? '4K' : '2K')
+                    : (imageSize.toLowerCase() === '4k' ? '4K' : imageSize.toLowerCase() === '2k' ? '2K' : '1K'),
+                  n: 1,
+                  ...imagePayload
+                }
+              : {
+                  model: modelName,
+                  prompt: promptForModel,
+                  size: getEffectiveSize(modelName),
+                  aspect_ratio: effectiveRatio,
+                  n: 1,
+                  ...(isSyncMode ? { isSync: true } : {}),
+                  ...imagePayload
+                };
             generateImageApi(apiKey, payload)
               .then((res: any) => {
                 if (res.taskId) {
@@ -1124,14 +988,24 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
           const placeholderIds = onInitGenerations(perRequestImageCount, currentPrompt, effectiveRatio);
           const payload: any = isGptImage2Model
             ? getGptImagePayload(currentPrompt, 1)
-            : {
-                model: modelName,
-                prompt: promptForModel,
-                size: getEffectiveSize(modelName),
-                aspect_ratio: effectiveRatio,
-                n: 1,
-                ...(isSyncMode ? { isSync: true } : {})
-              };
+            : imageModel === 'nano-banana'
+              ? {
+                  model: modelName,
+                  prompt: currentPrompt,
+                  aspect_ratio: effectiveRatio,
+                  imageSize: imageLine === 'line1'
+                    ? (imageSize.toLowerCase() === '4k' ? '4K' : '2K')
+                    : (imageSize.toLowerCase() === '4k' ? '4K' : imageSize.toLowerCase() === '2k' ? '2K' : '1K'),
+                  n: 1,
+                }
+              : {
+                  model: modelName,
+                  prompt: promptForModel,
+                  size: getEffectiveSize(modelName),
+                  aspect_ratio: effectiveRatio,
+                  n: 1,
+                  ...(isSyncMode ? { isSync: true } : {})
+                };
           generateImageApi(apiKey, payload)
             .then((res: any) => {
               if (res.taskId) {
@@ -1401,7 +1275,7 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
       return (
         <div className="flex items-center gap-0.5 drop-shadow-[0_0_8px_rgba(250,204,21,0.5)] transform -rotate-12">
           <Banana size={20} className="text-yellow-400" />
-          <Sparkles size={14} className={imageLine === 'line2' ? "text-yellow-400 ml-[-8px] mt-[-8px]" : "text-orange-400 ml-[-8px] mt-[-8px]"} />
+          <Sparkles size={14} className={imageLine === 'line3' ? "text-orange-400 ml-[-8px] mt-[-8px]" : "text-yellow-400 ml-[-8px] mt-[-8px]"} />
         </div>
       );
     }

@@ -121,7 +121,11 @@ export const generateImageApi = async (apiKey: string, payload: any): Promise<{ 
     if (resJson.url || resJson.image_url) {
         return { taskId: '', url: resJson.url || resJson.image_url };
     }
-    const taskId = resJson.id || resJson.task_id || (resJson.data && resJson.data.task_id);
+    const taskId =
+        resJson.id ||
+        resJson.task_id ||
+        (typeof resJson.data === 'string' ? resJson.data : null) ||
+        (resJson.data && resJson.data.task_id);
     if (!taskId && !resJson.url) throw new Error("No Task ID or URL received from API.");
     return { taskId: taskId || '', ...resJson };
 };
@@ -145,7 +149,11 @@ export const editImageApi = async (apiKey: string, payload: any): Promise<{ task
     }
 
     const resJson = await response.json();
-    const taskId = resJson.id || resJson.task_id || (resJson.data && resJson.data.task_id);
+    const taskId =
+        resJson.id ||
+        resJson.task_id ||
+        (typeof resJson.data === 'string' ? resJson.data : null) ||
+        (resJson.data && resJson.data.task_id);
     if (!taskId) throw new Error("No Task ID received from API.");
     return { taskId };
 };
