@@ -973,10 +973,11 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
             const compositePrompt = effectiveReferenceImages.length > 1
               ? `[多图参考] 输入是 ${effectiveReferenceImages.length} 张图片的拼贴。${currentPrompt}`
               : currentPrompt;
-            const collageRaw = collageBase64.split(',')[1];
             processSubmission({
-              image: collageRaw,
-              images: [collageRaw]
+              image: collageBase64,
+              images: [collageBase64],
+              reference_image: collageBase64,
+              reference_images: [collageBase64]
             }, compositePrompt);
           }).catch((err: any) => { setError(err.message); });
         }
