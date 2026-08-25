@@ -26,14 +26,13 @@ describe('Nano Banana line one protocol', () => {
       imageSize: '4K',
       images: ['data:image/png;base64,abc'],
     });
-    expect(payload).toMatchObject({
+    expect(payload).toEqual({
+      model: 'Nano_Banana_Pro',
+      prompt: '编辑图片',
       images: ['data:image/png;base64,abc'],
       size: '1:1',
       resolution: '4K',
     });
-    expect(payload).not.toHaveProperty('aspect_ratio');
-    expect(payload).not.toHaveProperty('imageSize');
-    expect(payload).not.toHaveProperty('image');
   });
 
   it('extracts the new task id from data[0].task_id', () => {
@@ -45,7 +44,7 @@ describe('Nano Banana line one protocol', () => {
     })).toBe('task_new_123');
   });
 
-  it('extracts the first successful image URL from data.result.images[0].url[0]', () => {
+  it('extracts the first URL from data.result.images[0].url[0]', () => {
     expect(extractNanoBananaLine1ImageUrl({
       data: {
         result: {
