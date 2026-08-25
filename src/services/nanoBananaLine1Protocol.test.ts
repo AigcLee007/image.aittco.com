@@ -33,15 +33,28 @@ describe('Nano Banana line one protocol', () => {
     });
     expect(payload).not.toHaveProperty('aspect_ratio');
     expect(payload).not.toHaveProperty('imageSize');
+    expect(payload).not.toHaveProperty('image');
   });
 
   it('extracts the new task id from data[0].task_id', () => {
-    expect(extractNanoBananaLine1TaskId({ data: [{ task_id: 'task_new_123' }] })).toBe('task_new_123');
+    expect(extractNanoBananaLine1TaskId({
+      data: [
+        { task_id: 'task_new_123' },
+        { task_id: 'task_interference_456' },
+      ],
+    })).toBe('task_new_123');
   });
 
   it('extracts the first successful image URL from data.result.images[0].url[0]', () => {
     expect(extractNanoBananaLine1ImageUrl({
-      data: { result: { images: [{ url: ['https://visionary.beer/image.png'] }] } },
+      data: {
+        result: {
+          images: [
+            { url: ['https://visionary.beer/image.png', 'https://visionary.beer/image-interference.png'] },
+            { url: ['https://visionary.beer/second-image-interference.png'] },
+          ],
+        },
+      },
     })).toBe('https://visionary.beer/image.png');
   });
 });
