@@ -20,17 +20,17 @@ describe('Nano Banana line one protocol', () => {
   });
 
   it('preserves optional reference images without sending legacy field names', () => {
-    expect(buildNanoBananaLine1Payload({
+    const payload = buildNanoBananaLine1Payload({
       prompt: '编辑图片',
       aspectRatio: '1:1',
       imageSize: '4K',
       images: ['data:image/png;base64,abc'],
-    })).toMatchObject({
+    });
+    expect(payload).toMatchObject({
       images: ['data:image/png;base64,abc'],
       size: '1:1',
       resolution: '4K',
     });
-    const payload = buildNanoBananaLine1Payload({ prompt: 'x', aspectRatio: '1:1', imageSize: '2K' }) as Record<string, unknown>;
     expect(payload).not.toHaveProperty('aspect_ratio');
     expect(payload).not.toHaveProperty('imageSize');
   });
