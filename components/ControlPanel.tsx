@@ -2,7 +2,7 @@
 import { AppStatus, NodeData, ToolMode } from '../types';
 import { useSelectionStore, type ReferenceImage } from '../src/store/selectionStore';
 import { useCanvasStore } from '../src/store/canvasStore';
-import { generateImageApi, getModelBySize, editImageApi } from '../services/api'; // Use new API
+import { generateImageApi, getModelBySize, editImageApi, uploadReferenceImagesApi } from '../services/api'; // Use new API
 import { generateVideo } from '../services/videoService';
 import { assetStorage } from '../src/services/assetStorage';
 import { optimizePrompt, PromptOption } from '../services/promptService';
@@ -16,6 +16,8 @@ import VideoFormConfig from './VideoFormConfig';
 import { GoogleLogo, OpenAILogo } from './Logos';
 import { DOUBAO_RESOLUTIONS, getDoubaoSize, findClosestRatio, extractRatioFromPrompt, renderMaskToDataURL, getBase64FromUrl, calculateGptImageSize } from '../src/utils/imageUtils';
 import { parsePromptReferenceTags } from '../src/utils/promptTags';
+import { buildNanoBananaLine1Payload } from '../src/services/nanoBananaLine1Protocol';
+import { prepareVisonReferencePayload } from '../src/services/visonReference';
 
 // Branding Icons are now in Logos.tsx
 
@@ -99,7 +101,8 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
   }, [panelMode, videoModel, imageModel]);
 
   // Optimize: only listen to nodes list, ignore canvasState (pan/zoom)
-  const { nodes, updateNode } = useCanvasStore();
+  const nodes = useCanvasStore((state) => state.nodes);
+  const updateNode = useCanvasStore((state) => state.updateNode);
   const { addLog } = useHistoryStore();
   const selectedNodes = nodes.filter(n => selectedIds.includes(n.id) && (n.type === 'IMAGE' || n.type === 'VIDEO'));
 
@@ -707,6 +710,12 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
         return 'gpt-image-2';
       }
       if (imageModel === 'nano-banana') {
+        if (imageLine === 'official-t3') {
+          const normalizedSize = imageSize.toLowerCase();
+          if (normalizedSize === '4k') return 'Nano-Banana-Pro-4K';
+          if (normalizedSize === '2k') return 'Nano-Banana-Pro-2K';
+          return 'Nano-Banana-Pro';
+        }
         if (imageLine === 'line2') return 'gemini-3-pro-image-preview';
         if (imageLine === 'line3') return 'gemini-3.1-flash-image-preview';
         return 'Nano_Banana_Pro';
@@ -716,21 +725,17 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
     };
 
     const modelName = getModelName();
-    const shouldUseAsyncImageApi = imageModel === 'nano-banana';
-    if (shouldUseAsyncImageApi && (imageLine === 'line2' || imageLine === 'line3')) {
+    if (imageModel === 'nano-banana' && (imageLine === 'official-t3' || imageLine === 'line2' || imageLine === 'line3')) {
       effectiveRatio = normalizeLine2Ratio(effectiveRatio);
     }
 
     const isGptImage2Model = imageModel === 'gpt-image-2';
     const promptWithoutAr = parsedPrompt.replace(/\s*--ar\s*\d+\s*[:：]\s*\d+/gi, '').trim();
-    const promptWithRatio = `${promptWithoutAr} --ar ${effectiveRatio}`;
-    const currentPrompt = (isGptImage2Model || shouldUseAsyncImageApi) ? promptWithoutAr : promptWithRatio;
+    const currentPrompt = promptWithoutAr;
     // Decision Logic:
     // User explicitly requested NO "Regenerate" / "Edit Mode".
     // Panel always functions as "Create New". References must be added manually.
     const effectiveImg2ImgMode = false; // Forced to false per user request
-
-    const isSyncMode = modelName === 'grok-4.2-image' && imageLine === 'line2';
 
     // 鐠侊紕鐣荤€圭偤妾崣鎴︹偓浣虹舶API閻ㄥ墕ize閸欏倹鏆?
     const getEffectiveSize = (model: string) => {
@@ -840,14 +845,30 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
           for (let reqIdx = 0; reqIdx < quantity; reqIdx++) {
             const placeholderIds = onInitGenerations(perRequestImageCount, currentPrompt, effectiveRatio);
             const promptForModel = getGrokPrompt(customPrompt || currentPrompt, modelName);
-            const payload: any = imageModel === 'nano-banana'
+            const payload: any = imageModel === 'nano-banana' && imageLine === 'line1'
+              ? buildNanoBananaLine1Payload({
+                  prompt: currentPrompt,
+                  aspectRatio: effectiveRatio,
+                  imageSize,
+                  images: Array.isArray(imagePayload?.images)
+                    ? imagePayload.images
+                    : Array.isArray(imagePayload?.image)
+                    ? imagePayload.image
+                    : typeof imagePayload?.image === 'string'
+                    ? [imagePayload.image]
+                    : undefined,
+                })
+              : imageModel === 'nano-banana'
               ? {
                   model: modelName,
-                  prompt: currentPrompt,
+                  prompt: imageLine === 'official-t3' ? `${currentPrompt} --ar ${effectiveRatio}` : currentPrompt,
                   aspect_ratio: effectiveRatio,
-                  imageSize: imageLine === 'line1'
+                  imageSize: imageLine === 'official-t3'
+                    ? imageSize.toUpperCase()
+                    : imageLine === 'line1'
                     ? (imageSize.toLowerCase() === '4k' ? '4K' : '2K')
                     : (imageSize.toLowerCase() === '4k' ? '4K' : imageSize.toLowerCase() === '2k' ? '2K' : '1K'),
+                  size: imageSize.toLowerCase(),
                   n: 1,
                   ...imagePayload
                 }
@@ -857,7 +878,6 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
                   size: getEffectiveSize(modelName),
                   aspect_ratio: effectiveRatio,
                   n: 1,
-                  ...(isSyncMode ? { isSync: true } : {}),
                   ...imagePayload
                 };
             generateImageApi(apiKey, payload)
@@ -904,8 +924,8 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
             };
             editImageApi(apiKey, payload)
               .then((res: any) => {
-                if (res.taskId) {
-                  placeholderIds.forEach(pid => onUpdateGeneration(pid, null, undefined, res.taskId));
+                if (res.url) {
+                  placeholderIds.forEach(pid => onUpdateGeneration(pid, res.url));
                 } else {
                   placeholderIds.forEach(pid => onUpdateGeneration(pid, null, "未知返回格式"));
                 }
@@ -920,6 +940,23 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
 	          // Doubao models support multi-image array natively
 	          const imageArray = refSrcs.map(src => src.includes(',') ? src.split(',')[1] : src);
 	          processSubmission({ image: imageArray });
+          } else if (imageModel === 'nano-banana' && imageLine === 'line1') {
+            try {
+              console.info('[Vison] uploading reference images', { count: effectiveReferenceImages.length });
+              const imagePayload = await prepareVisonReferencePayload({
+                references: effectiveReferenceImages,
+                toDataUrl: referenceToDataUrl,
+                upload: (images) => uploadReferenceImagesApi(apiKey, images),
+              });
+              console.info('[Vison] reference images uploaded', {
+                count: imagePayload.images.length,
+                urls: imagePayload.images,
+              });
+              processSubmission(imagePayload);
+            } catch (uploadError: any) {
+              console.error('[Vison] reference upload failed', uploadError);
+              setError(uploadError?.message || "Vison线路参考图上传失败");
+            }
           } else if (isGptImage2) {
             const imageDataUrls = (await Promise.all(effectiveReferenceImages.map(referenceToDataUrl)))
               .filter((value): value is string => !!value);
@@ -989,14 +1026,23 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
           const placeholderIds = onInitGenerations(perRequestImageCount, currentPrompt, effectiveRatio);
           const payload: any = isGptImage2Model
             ? getGptImagePayload(currentPrompt, 1)
+            : imageModel === 'nano-banana' && imageLine === 'line1'
+              ? buildNanoBananaLine1Payload({
+                  prompt: currentPrompt,
+                  aspectRatio: effectiveRatio,
+                  imageSize,
+                })
             : imageModel === 'nano-banana'
               ? {
                   model: modelName,
-                  prompt: currentPrompt,
+                  prompt: imageLine === 'official-t3' ? `${currentPrompt} --ar ${effectiveRatio}` : currentPrompt,
                   aspect_ratio: effectiveRatio,
-                  imageSize: imageLine === 'line1'
+                  imageSize: imageLine === 'official-t3'
+                    ? imageSize.toUpperCase()
+                    : imageLine === 'line1'
                     ? (imageSize.toLowerCase() === '4k' ? '4K' : '2K')
                     : (imageSize.toLowerCase() === '4k' ? '4K' : imageSize.toLowerCase() === '2k' ? '2K' : '1K'),
+                  size: imageSize.toLowerCase(),
                   n: 1,
                 }
               : {
@@ -1005,7 +1051,6 @@ const ControlPanel: React.FC<ControlPanelProps> = React.memo(({ onInitGeneration
                   size: getEffectiveSize(modelName),
                   aspect_ratio: effectiveRatio,
                   n: 1,
-                  ...(isSyncMode ? { isSync: true } : {})
                 };
           generateImageApi(apiKey, payload)
             .then((res: any) => {

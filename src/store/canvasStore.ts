@@ -31,6 +31,7 @@ interface CanvasStore {
   // Actions - Nodes
   setNodes: (nodes: NodeData[], skipHistory?: boolean) => void;
   addNode: (node: NodeData, skipHistory?: boolean) => void;
+  addNodes: (nodes: NodeData[], skipHistory?: boolean) => void;
   updateNode: (id: string, updates: Partial<NodeData>, skipHistory?: boolean) => void;
   moveNode: (id: string, oldPos: Point, newPos: Point) => void;
   deleteNode: (id: string) => void;
@@ -51,6 +52,11 @@ interface CanvasStore {
   // Utility
   generateId: () => string;
 }
+
+export const appendCanvasNodes = (existing: NodeData[], incoming: NodeData[]): NodeData[] => [
+  ...existing,
+  ...incoming,
+];
 
 export const useCanvasStore = create<CanvasStore>()(
   persist(
@@ -82,6 +88,16 @@ export const useCanvasStore = create<CanvasStore>()(
             historyManager.execute(command);
         } else {
             set((state) => { state.nodes.push(node); });
+        }
+      },
+
+      addNodes: (nodes, skipHistory = false) => {
+        if (!nodes.length) return;
+        const nextNodes = appendCanvasNodes(get().nodes, nodes);
+        if (!skipHistory) {
+          historyManager.execute(new SetNodesCommand(nextNodes));
+        } else {
+          set((state) => { state.nodes.push(...nodes); });
         }
       },
 

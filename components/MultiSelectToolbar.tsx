@@ -19,7 +19,7 @@ import {
 
 const MultiSelectToolbar: React.FC = () => {
   const { selectedIds, clearSelection } = useSelectionStore();
-  const { nodes } = useCanvasStore();
+  const nodes = useCanvasStore((state) => state.nodes);
   const { handleGroup, handleUngroup, handleAlign, handleDeleteSelected } = useCanvasOperations();
 
   if (selectedIds.length < 2) return null;

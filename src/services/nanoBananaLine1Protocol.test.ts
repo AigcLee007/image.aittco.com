@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { generateImageApi } from '../../services/api';
 import {
   buildNanoBananaLine1Payload,
   extractNanoBananaLine1TaskId,
@@ -56,4 +57,21 @@ describe('Nano Banana line one protocol', () => {
       },
     })).toBe('https://visionary.beer/image.png');
   });
+
+  it('returns data[0].task_id from the line-one submission response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ data: [{ task_id: 'task_new_123' }] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )));
+
+    await expect(generateImageApi('test-api-key', {
+      model: 'Nano_Banana_Pro',
+      prompt: '一只小猫',
+      size: '16:9',
+      resolution: '2K',
+    })).resolves.toMatchObject({ taskId: 'task_new_123' });
+
+    vi.unstubAllGlobals();
+  });
+
 });

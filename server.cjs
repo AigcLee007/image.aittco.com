@@ -8,6 +8,14 @@ const winston = require("winston");
 const fs = require("fs");
 const FormData = require("form-data");
 const https = require("https");
+const { spawn } = require("child_process");
+const {
+  extractTaskId,
+  getTaskFailureReason,
+  getTaskImageUrl,
+  getTaskPollPath,
+  getTaskStatus,
+} = require("./server/nanoBananaLine1Protocol.cjs");
 
 // Logger Configuration
 const logger = winston.createLogger({
@@ -24,6 +32,9 @@ const logger = winston.createLogger({
 
 const app = express();
 const PORT = 3325;
+// The site proxy terminates TLS before forwarding to Node. Trust the first
+// proxy hop so req.protocol/req.hostname reflect the public request.
+app.set("trust proxy", 1);
 
 // 涓婃父 API 閰嶇疆
 const UPSTREAM_URL = (
@@ -41,8 +52,14 @@ const POLLING_HTTPS_AGENT = new https.Agent({
   maxSockets: 20,
   family: 4,
 });
+const RESPONSES_HTTPS_AGENT = new https.Agent({
+  keepAlive: false,
+  maxSockets: 10,
+  family: 4,
+});
 const asyncTaskPayloadStore = new Map();
 const asyncTaskAliasStore = new Map();
+const asyncTaskProtocolStore = new Map();
 const MAX_ASYNC_RESULT_RETRIES = 1;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -84,16 +101,125 @@ const requestWithRetry = async (
   }
 };
 
-const extractTaskIdFromResponse = (payload) => {
-  if (!payload || typeof payload !== "object") return null;
-  if (typeof payload.id === "string" && payload.id) return payload.id;
-  if (typeof payload.task_id === "string" && payload.task_id) return payload.task_id;
-  if (typeof payload.data === "string" && payload.data) return payload.data;
-  if (payload.data && typeof payload.data.task_id === "string" && payload.data.task_id) {
-    return payload.data.task_id;
+const postJsonWithFetch = async (url, body, headers = {}, timeoutMs = 180000) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+    if (!response.ok) {
+      const error = new Error(
+        data?.error?.message ||
+        data?.error ||
+        (typeof data === "string" ? data : `Request failed with status ${response.status}`),
+      );
+      error.response = {
+        status: response.status,
+        data,
+      };
+      throw error;
+    }
+    return { status: response.status, data };
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return null;
 };
+
+const postJsonWithCurl = async (url, body, headers = {}, timeoutMs = 180000) => {
+  const args = [
+    "--silent",
+    "--show-error",
+    "--location",
+    "--max-time",
+    String(Math.max(1, Math.ceil(timeoutMs / 1000))),
+    "--connect-timeout",
+    "20",
+    "--request",
+    "POST",
+    url,
+    "--data-binary",
+    "@-",
+    "--write-out",
+    "\n%{http_code}",
+  ];
+
+  for (const [key, value] of Object.entries(headers)) {
+    args.push("--header", `${key}: ${value}`);
+  }
+
+  const payload = JSON.stringify(body);
+
+  return await new Promise((resolve, reject) => {
+    const child = spawn("curl.exe", args, {
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", reject);
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        return reject(new Error(stderr.trim() || `curl exited with code ${code}`));
+      }
+
+      const lastNewline = stdout.lastIndexOf("\n");
+      const bodyText = lastNewline >= 0 ? stdout.slice(0, lastNewline) : stdout;
+      const statusText = lastNewline >= 0 ? stdout.slice(lastNewline + 1).trim() : "";
+      const status = Number(statusText || 0) || 0;
+
+      let data = null;
+      try {
+        data = bodyText ? JSON.parse(bodyText) : null;
+      } catch {
+        data = bodyText;
+      }
+
+      if (status >= 400 || status === 0) {
+        const error = new Error(
+          data?.error?.message ||
+          data?.error ||
+          (typeof data === "string" && data.trim()) ||
+          stderr.trim() ||
+          `curl request failed with status ${status || "unknown"}`,
+        );
+        error.response = {
+          status: status || 500,
+          data,
+        };
+        return reject(error);
+      }
+
+      resolve({ status, data });
+    });
+
+    child.stdin.write(payload);
+    child.stdin.end();
+  });
+};
+
+const extractTaskIdFromResponse = extractTaskId;
 
 const resolveAliasedTaskId = (taskId) => {
   let current = taskId;
@@ -105,10 +231,16 @@ const resolveAliasedTaskId = (taskId) => {
   return current;
 };
 
+const normalizeTaskId = (rawTaskId = "") => {
+  const trimmed = String(rawTaskId).trim();
+  const taskMatch = trimmed.match(/task_[A-Za-z0-9]+$/);
+  if (taskMatch) return taskMatch[0];
+  return trimmed.split("/").filter(Boolean).pop() || trimmed;
+};
+
 const shouldRetryAsyncResultFailure = (payload) => {
   const failReason = String(
-    payload?.fail_reason ||
-    payload?.data?.fail_reason ||
+    getTaskFailureReason(payload) ||
     payload?.error?.message ||
     payload?.result?.error ||
     payload?.data?.error ||
@@ -119,8 +251,8 @@ const shouldRetryAsyncResultFailure = (payload) => {
 
 const summarizeTaskPayload = (payload) => {
   const summary = {
-    status: payload?.status || payload?.state || null,
-    fail_reason: payload?.fail_reason || payload?.data?.fail_reason || null,
+    status: getTaskStatus(payload) || null,
+    fail_reason: getTaskFailureReason(payload) || null,
     error:
       payload?.error?.message ||
       payload?.error ||
@@ -128,7 +260,7 @@ const summarizeTaskPayload = (payload) => {
       payload?.result?.error ||
       null,
     model: payload?.model || payload?.properties?.model || payload?.data?.model || null,
-    url: payload?.url || payload?.image_url || null,
+    url: getTaskImageUrl(payload) || null,
     outputCount: 0,
     outputsPreview: [],
   };
@@ -222,6 +354,68 @@ app.use("/api", globalLimiter);
 
 app.use(cors());
 app.use(express.json({ limit: "50mb" })); // 鏀寔澶у浘鐗?Base64
+
+app.post("/api/responses", generateLimiter, async (req, res) => {
+  try {
+    const userKey = req.headers["authorization"];
+    if (!userKey || userKey.length < 10) {
+      return res.status(401).json({ error: "Missing API Key" });
+    }
+
+    const upstreamUrl = `${UPSTREAM_URL}/v1/responses`;
+    const upstreamHeaders = {
+      Authorization: userKey,
+      "Content-Type": "application/json",
+    };
+
+    try {
+      const response = await requestWithRetry(
+        () =>
+          axios.post(upstreamUrl, req.body, {
+            headers: upstreamHeaders,
+            timeout: 180000,
+            httpsAgent: RESPONSES_HTTPS_AGENT,
+          }),
+        { retries: 2, delayMs: 900, label: "responses" },
+      );
+
+      return res.json(response.data);
+    } catch (axiosError) {
+      if (axiosError.response || !isRetryableNetworkError(axiosError)) {
+        throw axiosError;
+      }
+
+      console.warn("[Responses] Axios transport failed, falling back to fetch:", axiosError.message);
+      try {
+        const fetchFallback = await postJsonWithFetch(
+          upstreamUrl,
+          req.body,
+          upstreamHeaders,
+          180000,
+        );
+        return res.status(fetchFallback.status).json(fetchFallback.data);
+      } catch (fetchError) {
+        console.warn("[Responses] Fetch transport failed, falling back to curl:", fetchError.message);
+        const curlFallback = await postJsonWithCurl(
+          upstreamUrl,
+          req.body,
+          upstreamHeaders,
+          180000,
+        );
+        return res.status(curlFallback.status).json(curlFallback.data);
+      }
+    }
+  } catch (error) {
+    console.error("[Responses] Error:", error.response?.data || error.message);
+    if (error.response) {
+      res.status(error.response.status).json(error.response.data);
+    } else if (error.code === "ECONNABORTED") {
+      res.status(504).json({ error: "Responses request timed out" });
+    } else {
+      res.status(500).json({ error: error.message || "Responses request failed" });
+    }
+  }
+});
 
 // ==================== 浣欓鏌ヨ鎺ュ彛 ====================
 app.get("/api/balance/info", async (req, res) => {
@@ -384,7 +578,7 @@ app.post("/api/generate", generateLimiter, async (req, res) => {
       }
     };
 
-    const isSyncLine = requestBody.isSync === true;
+    const isSyncLine = false;
     if (isSyncLine) {
       delete requestBody.isSync; // 绉婚櫎鍓嶇涓撶敤鏍囪瘑
     }
@@ -447,17 +641,15 @@ app.post("/api/generate", generateLimiter, async (req, res) => {
     console.log("[Generate] Proxying request:", {
       model: requestBody.model,
       size: requestBody.size,
+      resolution: requestBody.resolution,
       ratio: requestBody.aspect_ratio,
       prompt: requestBody.prompt?.substring(0, 50) + "...",
       hasImage: !!requestBody.image,
-      isSync: isSyncLine,
       imageType: Array.isArray(requestBody.image) ? "Array" : typeof requestBody.image,
       grokImageDebug,
     });
 
-    const upstreamUrl = isSyncLine
-      ? `${UPSTREAM_URL}/v1/chat/completions`
-      : `${UPSTREAM_URL}/v1/images/generations?async=true`;
+    const upstreamUrl = `${UPSTREAM_URL}/v1/images/generations`;
 
     // 濡傛灉鏄悓姝ョ嚎璺紙Chat 鎺ュ彛锛夛紝杞崲璇锋眰浣?
     let finalRequestBody = requestBody;
@@ -490,7 +682,29 @@ app.post("/api/generate", generateLimiter, async (req, res) => {
       }
     }
 
-    const response = await requestWithRetry(
+    const upstreamHeaders = {
+      Authorization: userKey,
+      "Content-Type": "application/json",
+    };
+    let response;
+    try {
+      response = await postJsonWithFetch(
+        upstreamUrl,
+        finalRequestBody,
+        upstreamHeaders,
+        600000,
+      );
+    } catch (fetchError) {
+      console.warn("[Generate] Fetch transport failed, falling back to curl:", fetchError.message);
+      response = await postJsonWithCurl(
+        upstreamUrl,
+        finalRequestBody,
+        upstreamHeaders,
+        600000,
+      );
+    }
+    /*
+    const axiosResponse = await requestWithRetry(
       () =>
         axios.post(
           upstreamUrl,
@@ -501,11 +715,12 @@ app.post("/api/generate", generateLimiter, async (req, res) => {
               "Content-Type": "application/json",
             },
             timeout: 600000, // 600 绉?(10鍒嗛挓) 瓒呮椂
-            httpsAgent: SHARED_HTTPS_AGENT,
+            httpsAgent: RESPONSES_HTTPS_AGENT,
           },
         ),
       { retries: 1, delayMs: 700, label: "generate" },
     );
+    */
 
     // 濡傛灉鏄悓姝ョ嚎璺紝瑙ｆ瀽 Chat 杩斿洖鏍煎紡浠ユ彁鍙?URL
     if (isSyncLine) {
@@ -523,6 +738,9 @@ app.post("/api/generate", generateLimiter, async (req, res) => {
     console.log("[Generate] Upstream response:", response.data);
     const submittedTaskId = extractTaskIdFromResponse(response.data);
     if (submittedTaskId && !isSyncLine) {
+      if (finalRequestBody.model === "Nano_Banana_Pro") {
+        asyncTaskProtocolStore.set(submittedTaskId, "nano-line1");
+      }
       asyncTaskPayloadStore.set(submittedTaskId, {
         payload: JSON.parse(JSON.stringify(finalRequestBody)),
         retries: 0,
@@ -658,7 +876,7 @@ app.post("/api/edit", generateLimiter, async (req, res) => {
     const response = await requestWithRetry(
       () =>
         axios.post(
-          `${UPSTREAM_URL}/v1/images/edits?async=true`,
+          `${UPSTREAM_URL}/v1/images/edits`,
           formData,
           {
             headers: {
@@ -731,12 +949,14 @@ app.get("/api/task/:taskId", pollingLimiter, async (req, res) => {
     }
 
     const { taskId } = req.params;
-    const resolvedTaskId = resolveAliasedTaskId(taskId);
+    const normalizedTaskId = normalizeTaskId(taskId);
+    const resolvedTaskId = resolveAliasedTaskId(normalizedTaskId);
+    const taskPollPath = getTaskPollPath(resolvedTaskId, asyncTaskProtocolStore);
 
     const response = await requestWithRetry(
       () =>
         axios.get(
-          `${UPSTREAM_URL}/v1/images/tasks/${resolvedTaskId}`,
+          `${UPSTREAM_URL}${taskPollPath}`,
           {
             headers: {
               Authorization: userKey,
@@ -751,11 +971,13 @@ app.get("/api/task/:taskId", pollingLimiter, async (req, res) => {
 
     const taskPayload = response.data;
     console.log("[Task Poll] Summary:", {
-      requestedTaskId: taskId,
-      resolvedTaskId,
+        requestedTaskId: taskId,
+        normalizedTaskId,
+        resolvedTaskId,
+        taskPollPath,
       ...summarizeTaskPayload(taskPayload),
     });
-    const statusRaw = String(taskPayload?.status || taskPayload?.state || "").toUpperCase();
+    const statusRaw = String(getTaskStatus(taskPayload) || "").toUpperCase();
     const isFailedStatus =
       statusRaw === "FAILURE" ||
       statusRaw === "FAILED" ||
@@ -770,7 +992,7 @@ app.get("/api/task/:taskId", pollingLimiter, async (req, res) => {
         const retryResponse = await requestWithRetry(
           () =>
             axios.post(
-              `${UPSTREAM_URL}/v1/images/generations?async=true`,
+              `${UPSTREAM_URL}/v1/images/generations`,
               stored.payload,
               {
                 headers: {
@@ -788,6 +1010,8 @@ app.get("/api/task/:taskId", pollingLimiter, async (req, res) => {
           const rootTaskId = taskId;
           asyncTaskAliasStore.set(rootTaskId, newTaskId);
           asyncTaskAliasStore.set(resolvedTaskId, newTaskId);
+          const taskProtocol = asyncTaskProtocolStore.get(resolvedTaskId);
+          if (taskProtocol) asyncTaskProtocolStore.set(newTaskId, taskProtocol);
           asyncTaskPayloadStore.set(newTaskId, {
             payload: stored.payload,
             retries: (stored.retries || 0) + 1,
@@ -879,6 +1103,7 @@ app.post("/api/gemini/generate", generateLimiter, async (req, res) => {
         aspect_ratio: aspect_ratio || "1:1",
         imageSize: finalImageSize,
         n: requestBody.n || 1,
+        response_format: "url",
       };
 
       console.log("[Gemini Generate] Nano_Banana_Pro payload:", JSON.stringify(upstreamBody, null, 2));
@@ -1082,7 +1307,29 @@ app.post("/api/gemini/generate", generateLimiter, async (req, res) => {
     }
 
     // 浠庡搷搴斾腑鎻愬彇鍥剧墖
-    const candidates = response.data?.candidates;
+    const candidates = response.data?.candidates || (() => {
+      const parts = [];
+      const content = response.data?.choices?.[0]?.message?.content;
+      if (Array.isArray(content)) parts.push(...content);
+      else if (typeof content === "string" && content) parts.push({ text: content });
+
+      const dataItems = Array.isArray(response.data?.data)
+        ? response.data.data
+        : Array.isArray(response.data?.images)
+          ? response.data.images
+          : [];
+      dataItems.forEach((item) => {
+        if (typeof item === "string") parts.push({ url: item });
+        else if (item?.url) parts.push({ url: item.url });
+        else if (item?.image_url?.url) parts.push({ url: item.image_url.url });
+        else if (item?.b64_json) parts.push({ inline_data: { mime_type: "image/png", data: item.b64_json } });
+      });
+      if (response.data?.url) parts.push({ url: response.data.url });
+      if (typeof response.data?.image_url === "string") parts.push({ url: response.data.image_url });
+      else if (response.data?.image_url?.url) parts.push({ url: response.data.image_url.url });
+
+      return parts.length ? [{ content: { parts } }] : [];
+    })();
     if (!candidates || candidates.length === 0) {
       return res.status(500).json({ error: "鐢熸垚澶辫触锛氭湭杩斿洖缁撴灉" });
     }
@@ -1102,10 +1349,20 @@ app.post("/api/gemini/generate", generateLimiter, async (req, res) => {
           const mimeType = part.inline_data.mime_type || "image/png";
           const dataUrl = `data:${mimeType};base64,${part.inline_data.data}`;
           resultImages.push(dataUrl);
+        } else if (part.image_url?.url || part.url) {
+          resultImages.push(part.image_url?.url || part.url);
         } else if (part.text) {
           resultText += part.text;
         }
       }
+    }
+
+    if (resultImages.length === 0) {
+      const serializedResponse = JSON.stringify(response.data || "");
+      const embeddedImageUrls = serializedResponse.match(
+        /https?:\/\/[^"\s)]+|data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
+      ) || [];
+      resultImages.push(...embeddedImageUrls);
     }
 
     if (resultImages.length === 0) {
@@ -1482,6 +1739,8 @@ app.post("/api/reverse-prompt", async (req, res) => {
 const ANNOUNCEMENT_FILE = path.join(__dirname, 'announcement.json');
 const ANNOUNCEMENT_UPLOAD_ROOT = path.join(__dirname, 'uploads');
 const ANNOUNCEMENT_UPLOAD_DIR = path.join(ANNOUNCEMENT_UPLOAD_ROOT, 'announcements');
+const REFERENCE_UPLOAD_DIR = path.join(ANNOUNCEMENT_UPLOAD_ROOT, 'references');
+const REFERENCE_UPLOAD_TTL_MS = 2 * 60 * 60 * 1000;
 const ANNOUNCEMENT_ADMIN_API_KEY =
   process.env.ANNOUNCEMENT_ADMIN_API_KEY ||
   "sk-K9OJf52OughwT8vizrDKJpvMebzutpbKVXxxhYe8EZFF0nm7";
@@ -1569,6 +1828,86 @@ const parseDataUrlImage = (value) => {
   if (!buffer.length) return null;
   return { mime, ext, buffer };
 };
+
+const cleanupExpiredReferenceUploads = () => {
+  try {
+    if (!fs.existsSync(REFERENCE_UPLOAD_DIR)) return 0;
+    const cutoff = Date.now() - REFERENCE_UPLOAD_TTL_MS;
+    let removed = 0;
+    for (const filename of fs.readdirSync(REFERENCE_UPLOAD_DIR)) {
+      const filePath = path.join(REFERENCE_UPLOAD_DIR, filename);
+      const stat = fs.statSync(filePath);
+      if (!stat.isFile() || stat.mtimeMs >= cutoff) continue;
+      fs.unlinkSync(filePath);
+      removed += 1;
+    }
+    if (removed > 0) console.log(`[Reference Upload] Removed ${removed} expired file(s)`);
+    return removed;
+  } catch (error) {
+    console.error("[Reference Upload] Cleanup Error:", error);
+    return 0;
+  }
+};
+
+const getPublicRequestOrigin = (req) => {
+  const configured = String(process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
+  if (configured) return configured;
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const forwardedHost = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
+  const origin = String(req.headers.origin || "").replace(/\/$/, "");
+  if (/^https:\/\//i.test(origin)) return origin;
+  if (forwardedProto && forwardedHost) return `${forwardedProto}://${forwardedHost}`;
+  return `${req.protocol}://${req.get("host")}`;
+};
+
+app.post("/api/reference/images", generateLimiter, (req, res) => {
+  try {
+    const userKey = req.headers["authorization"];
+    if (!userKey || String(userKey).length < 10) {
+      return res.status(401).json({ error: "Missing API Key" });
+    }
+
+    const images = Array.isArray(req.body?.images) ? req.body.images : [];
+    if (!images.length || images.length > 10) {
+      return res.status(400).json({ error: "Reference image count must be between 1 and 10" });
+    }
+
+    fs.mkdirSync(REFERENCE_UPLOAD_DIR, { recursive: true });
+    cleanupExpiredReferenceUploads();
+    const origin = getPublicRequestOrigin(req);
+    console.info("[Reference Upload] Request received:", {
+      count: images.length,
+      origin,
+      forwardedProto: req.headers["x-forwarded-proto"] || null,
+      forwardedHost: req.headers["x-forwarded-host"] || null,
+    });
+    const urls = images.map((image, index) => {
+      const parsed = parseDataUrlImage(image);
+      if (!parsed) throw new Error(`Reference image ${index + 1} has an invalid format`);
+      if (parsed.buffer.length > 10 * 1024 * 1024) {
+        throw new Error(`Reference image ${index + 1} exceeds 10MB`);
+      }
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}-${index + 1}.${parsed.ext}`;
+      fs.writeFileSync(path.join(REFERENCE_UPLOAD_DIR, filename), parsed.buffer);
+      return `${origin}/uploads/references/${filename}`;
+    });
+
+    console.info("[Reference Upload] Completed:", { count: urls.length, origin });
+    return res.json({
+      success: true,
+      urls,
+      expiresAt: new Date(Date.now() + REFERENCE_UPLOAD_TTL_MS).toISOString(),
+    });
+  } catch (error) {
+    console.error("[Reference Upload] Error:", error.message || error);
+    return res.status(400).json({ error: error.message || "Reference image upload failed" });
+  }
+});
+
+fs.mkdirSync(REFERENCE_UPLOAD_DIR, { recursive: true });
+cleanupExpiredReferenceUploads();
+const referenceCleanupTimer = setInterval(cleanupExpiredReferenceUploads, 15 * 60 * 1000);
+referenceCleanupTimer.unref?.();
 
 // Admin image upload for announcements (supports multiple base64 data URLs)
 app.post("/api/announcement/images", (req, res) => {

@@ -11,9 +11,10 @@ import { v4 as uuidv4 } from 'uuid';
 
 export const useCanvasOperations = () => {
   const {
-    nodes, setNodes, addNode, updateNode, deleteNodes,
-    canvasState, resetCanvasView, addToHistory, generateId
-  } = useCanvasStore();
+    setNodes, addNode, updateNode, deleteNodes,
+    resetCanvasView, addToHistory, generateId
+  } = useCanvasStore.getState();
+  const nodes = useCanvasStore((state) => state.nodes);
 
   const {
     selectedIds, select, clearSelection,
@@ -122,7 +123,7 @@ export const useCanvasOperations = () => {
   // Arrange nodes
   const handleArrangeNodes = useCallback(() => {
     // addToHistory(); // Handled by SetNodesCommand
-    const currentNodes = useCanvasStore.getState().nodes;
+    const { nodes: currentNodes, canvasState } = useCanvasStore.getState();
     const screenStartX = 360;
     const canvasStartX = (screenStartX - canvasState.offset.x) / canvasState.scale;
     const screenStartY = 100;
@@ -135,7 +136,7 @@ export const useCanvasOperations = () => {
       maxRows: 3
     });
     setNodes(newNodes);
-  }, [canvasState, setNodes]);
+  }, [setNodes]);
 
   // Download all canvas images
   const handleDownloadAllCanvas = useCallback(async () => {

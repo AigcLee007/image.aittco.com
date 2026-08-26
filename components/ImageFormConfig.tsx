@@ -61,15 +61,13 @@ export const ImageFormConfig: React.FC = () => {
   const isNanoBanana = imageModel === 'nano-banana';
   const isGptImage2 = imageModel === 'gpt-image-2';
   const normalizedImageSize = imageSize.toLowerCase();
-  const nanoBananaCost = imageLine === 'line1'
-    ? 6
-    : imageLine === 'line2'
-      ? 5
-      : imageLine === 'line3'
-        ? 4
-        : normalizedImageSize === '4k'
-          ? 6
-          : 5;
+  const nanoBananaCost = imageLine === 'official-t3'
+    ? normalizedImageSize === '1k' ? 6 : normalizedImageSize === '2k' ? 8 : 10
+    : imageLine === 'line1'
+      ? 6
+      : imageLine === 'line2'
+        ? 5
+        : 4;
   const gptImageCost = 3;
   const gridClass = isNanoBanana
     ? 'grid-cols-[1.2fr_1fr_1.2fr_0.8fr] gap-1.5'
@@ -170,9 +168,10 @@ export const ImageFormConfig: React.FC = () => {
               value={imageLine}
               onChange={(val) => setImageLine(val)}
               options={[
-                { value: 'line1', label: '\u7EBF\u8DEF\u4E00' },
-                { value: 'line2', label: '\u7EBF\u8DEF\u4E8C' },
-                { value: 'line3', label: '\u7EBF\u8DEF\u4E09' },
+                { value: 'official-t3', label: '\u5B98\u65B9T3' },
+                { value: 'line1', label: 'Vison\u7EBF\u8DEF' },
+                { value: 'line2', label: 'Adobe\u7EBF\u8DEF' },
+                { value: 'line3', label: '\u4F18\u60E0\u7EBF\u8DEF' },
               ]}
             />
           </div>

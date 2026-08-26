@@ -89,7 +89,7 @@ const enqueueAutoDownload = (item: AutoDownloadItem) => {
 };
 
 export const useGenerationLogic = () => {
-    const { nodes, setNodes, updateNode, generateId, setCanvasTransform, canvasState } = useCanvasStore();
+    const { setNodes, updateNode, generateId, setCanvasTransform } = useCanvasStore.getState();
     const { setToolMode, addLog } = useSelectionStore.getState() as any; // Cast to access non-state actions if any or mixed
 
     const autoDownloadGeneratedImage = useCallback((src: string, prompt?: string, id?: string) => {
@@ -98,6 +98,7 @@ export const useGenerationLogic = () => {
 
     // Init generations (placeholder nodes)
     const handleInitGenerations = useCallback((count: number, prompt: string, aspectRatio: string = '1:1', baseNode?: NodeData, type: 'IMAGE' | 'VIDEO' = 'IMAGE') => {
+        const { canvasState } = useCanvasStore.getState();
         let width = 512;
         let height = 512;
 
@@ -194,7 +195,7 @@ export const useGenerationLogic = () => {
         }
 
         return newNodes.map(n => n.id);
-    }, [generateId, setNodes, setToolMode, canvasState, setCanvasTransform]);
+    }, [generateId, setNodes, setToolMode, setCanvasTransform]);
 
     // Update progress
     const handleUpdateProgress = useCallback((id: string, progress: number) => {

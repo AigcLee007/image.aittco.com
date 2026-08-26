@@ -8,6 +8,7 @@ import { useSelectionStore } from '../src/store/selectionStore';
 import wechatQR from '../src/assets/wechat_qr.png';
 import GlassModal from './GlassModal';
 import CoinIcon from './CoinIcon';
+import { assetStorage } from '../src/services/assetStorage';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -296,8 +297,36 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [balanceData, setBalanceData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
+  const [isConfirmingLocalClear, setIsConfirmingLocalClear] = useState(false);
+  const [isClearingLocalData, setIsClearingLocalData] = useState(false);
   const { logs = [], clearLogs } = useHistoryStore();
   const safeLogs = Array.isArray(logs) ? logs : [];
+
+  const handleClearLocalData = async () => {
+    if (isClearingLocalData) return;
+    if (!isConfirmingLocalClear) {
+      setIsConfirmingLocalClear(true);
+      window.setTimeout(() => setIsConfirmingLocalClear(false), 4000);
+      return;
+    }
+
+    setIsClearingLocalData(true);
+    try {
+      await assetStorage.clearAll();
+      [
+        'selection-storage',
+        'infinitemuse-storage',
+        'infinitemuse-history',
+        'agent-store',
+      ].forEach((key) => localStorage.removeItem(key));
+      window.location.reload();
+    } catch (clearError) {
+      console.error('[LocalData] Clear failed:', clearError);
+      setError('本地数据清理失败，请重试');
+      setIsClearingLocalData(false);
+      setIsConfirmingLocalClear(false);
+    }
+  };
 
   // Announcement State
   const [announcementForm, setAnnouncementForm] = useState({ title: '', content: '', active: true, pinned: false });
@@ -773,6 +802,25 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 </label>
               </div>
 
+              <div className="border border-red-500/25 bg-red-500/10 rounded-xl p-3.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm text-red-200 font-medium">清除本地数据</div>
+                    <div className="text-xs text-red-200/60 mt-1">删除本机画布、历史记录和 IndexedDB 图片，不影响服务器数据</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleClearLocalData()}
+                    disabled={isClearingLocalData}
+                    className={`shrink-0 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors ${isConfirmingLocalClear ? 'bg-red-600 text-white' : 'bg-red-500/15 hover:bg-red-500/25 text-red-200'} disabled:opacity-50`}
+                    title="清除全部本地数据"
+                  >
+                    {isClearingLocalData ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                    {isConfirmingLocalClear ? '再次点击确认' : '清除数据'}
+                  </button>
+                </div>
+              </div>
+
               {/* Balance Display */}
               {balanceData && (
                 <div className="bg-white/5 p-5 rounded-2xl border border-white/10 space-y-4">
@@ -1226,4 +1274,3 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 	};
 
 export default SettingsModal;
-

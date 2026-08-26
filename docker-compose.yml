@@ -9,3 +9,4 @@ services:
       - "3325:3325"
     environment:
       - NODE_ENV=production
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
