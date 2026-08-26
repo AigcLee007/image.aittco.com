@@ -44,6 +44,14 @@ describe('server Nano Banana line one protocol', () => {
     expect(getTaskImageUrl(response)).toBe('https://visionary.beer/image.png');
   });
 
+  it('reads a completed synchronous result URL from results', () => {
+    expect(getTaskImageUrl({
+      id: 'generation_123',
+      status: 'succeeded',
+      results: [{ url: 'https://visionary.beer/api/generations/generation_123/image' }],
+    })).toBe('https://visionary.beer/api/generations/generation_123/image');
+  });
+
   it('keeps unmarked tasks on the legacy poll path', () => {
     expect(getTaskPollPath('old_task', new Map())).toBe('/v1/images/tasks/old_task');
   });

@@ -742,6 +742,11 @@ app.post("/api/generate", generateLimiter, async (req, res) => {
     }
 
     console.log("[Generate] Upstream response:", response.data);
+    const completedImageUrl = getTaskImageUrl(response.data);
+    const completedStatus = String(getTaskStatus(response.data) || "").toLowerCase();
+    if (completedImageUrl && ["succeeded", "success", "completed", "done"].includes(completedStatus)) {
+      return res.json({ ...response.data, url: completedImageUrl, image_url: completedImageUrl });
+    }
     const submittedTaskId = extractTaskIdFromResponse(response.data);
     if (submittedTaskId && !isSyncLine) {
       if (finalRequestBody.model === "Nano_Banana_Pro") {

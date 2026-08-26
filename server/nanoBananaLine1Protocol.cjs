@@ -53,9 +53,13 @@ const getTaskImageUrl = (payload) => {
   const firstImageUrl = Array.isArray(firstImage?.url) ? firstImage.url[0] : undefined;
   const dataItems = Array.isArray(data) ? data : [];
   const firstDataItem = asRecord(dataItems[0]);
+  const results = Array.isArray(root?.results) ? root.results : [];
+  const firstResult = asRecord(results[0]);
 
   return firstString(
     firstImageUrl,
+    firstResult?.url,
+    firstResult?.image_url,
     root?.url,
     root?.image_url,
     firstDataItem?.url,
