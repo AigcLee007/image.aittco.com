@@ -10,6 +10,7 @@ const FormData = require("form-data");
 const https = require("https");
 const { spawn } = require("child_process");
 const { resolveCurlExecutable } = require("./server/curlTransport.cjs");
+const { createTaskPoller } = require("./server/taskPolling.cjs");
 const {
   extractTaskId,
   getTaskFailureReason,
@@ -62,6 +63,7 @@ const asyncTaskPayloadStore = new Map();
 const asyncTaskAliasStore = new Map();
 const asyncTaskProtocolStore = new Map();
 const MAX_ASYNC_RESULT_RETRIES = 1;
+const taskPoller = createTaskPoller({ protocols: asyncTaskProtocolStore });
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const isRetryableNetworkError = (error) => {
@@ -288,7 +290,9 @@ const summarizeTaskPayload = (payload) => {
 
   const uniqueUrls = Array.from(new Set(urls));
   summary.outputCount = uniqueUrls.length;
-  summary.outputsPreview = uniqueUrls.slice(0, 3);
+  summary.outputsPreview = uniqueUrls.slice(0, 3).map((url) =>
+    url.length > 180 ? `${url.slice(0, 180)}...` : url,
+  );
   return summary;
 };
 
@@ -741,7 +745,7 @@ app.post("/api/generate", generateLimiter, async (req, res) => {
       }
     }
 
-    console.log("[Generate] Upstream response:", response.data);
+    console.log("[Generate] Upstream response summary:", summarizeTaskPayload(response.data));
     const completedImageUrl = getTaskImageUrl(response.data);
     const completedStatus = String(getTaskStatus(response.data) || "").toLowerCase();
     if (completedImageUrl && ["succeeded", "success", "completed", "done"].includes(completedStatus)) {
@@ -962,23 +966,20 @@ app.get("/api/task/:taskId", pollingLimiter, async (req, res) => {
     const { taskId } = req.params;
     const normalizedTaskId = normalizeTaskId(taskId);
     const resolvedTaskId = resolveAliasedTaskId(normalizedTaskId);
-    const taskPollPath = getTaskPollPath(resolvedTaskId, asyncTaskProtocolStore);
-
-    const response = await requestWithRetry(
-      () =>
-        axios.get(
-          `${UPSTREAM_URL}${taskPollPath}`,
-          {
-            headers: {
-              Authorization: userKey,
-              "Content-Type": "application/json",
-            },
-            timeout: 10000,
-            httpsAgent: POLLING_HTTPS_AGENT,
-          },
-        ),
-      { retries: 3, delayMs: 500, label: "task-poll" },
-    );
+    const polled = await taskPoller({
+      taskId: resolvedTaskId,
+      userKey,
+      request: (taskPollPath) => requestWithRetry(
+        () => axios.get(`${UPSTREAM_URL}${taskPollPath}`, {
+          headers: { Authorization: userKey, "Content-Type": "application/json" },
+          timeout: 10000,
+          httpsAgent: POLLING_HTTPS_AGENT,
+        }),
+        { retries: 0, label: "task-poll" },
+      ),
+    });
+    const response = polled.response;
+    const taskPollPath = polled.path || getTaskPollPath(resolvedTaskId, asyncTaskProtocolStore);
 
     const taskPayload = response.data;
     console.log("[Task Poll] Summary:", {
