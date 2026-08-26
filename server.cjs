@@ -9,6 +9,7 @@ const fs = require("fs");
 const FormData = require("form-data");
 const https = require("https");
 const { spawn } = require("child_process");
+const { resolveCurlExecutable } = require("./server/curlTransport.cjs");
 const {
   extractTaskId,
   getTaskFailureReason,
@@ -161,7 +162,7 @@ const postJsonWithCurl = async (url, body, headers = {}, timeoutMs = 180000) => 
   const payload = JSON.stringify(body);
 
   return await new Promise((resolve, reject) => {
-    const child = spawn("curl.exe", args, {
+    const child = spawn(resolveCurlExecutable(), args, {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -177,7 +178,12 @@ const postJsonWithCurl = async (url, body, headers = {}, timeoutMs = 180000) => 
       stderr += chunk.toString();
     });
 
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (error?.code === "ENOENT") {
+        error.message = `curl executable not found (${resolveCurlExecutable()}); install curl or set CURL_BIN`;
+      }
+      reject(error);
+    });
 
     child.on("close", (code) => {
       if (code !== 0) {
