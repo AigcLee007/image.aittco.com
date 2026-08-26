@@ -20,6 +20,9 @@ FROM node:18-alpine
 
 WORKDIR /app
 
+# The server's network fallback invokes curl when Node transports fail.
+RUN apk add --no-cache curl
+
 # Copy package files
 COPY package.json package-lock.json ./
 
