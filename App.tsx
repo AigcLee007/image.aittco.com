@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import InfiniteCanvas from "./components/InfiniteCanvas";
 import MobileView from "./components/MobileView";
 import Toolbar from "./components/Toolbar";
+import AgentWorkspace from "./components/AgentWorkspace";
 import MultiSelectToolbar from "./components/MultiSelectToolbar";
 import ControlPanel from "./components/ControlPanel";
 import InpaintWindow from "./components/InpaintWindow";
@@ -10,6 +11,7 @@ import { Settings, CheckCircle, LayoutGrid } from "lucide-react";
 
 import { useCanvasStore } from "./src/store/canvasStore";
 import { useSelectionStore } from "./src/store/selectionStore";
+import { useAgentStore } from "./src/store/agentStore";
 import { NodeData, ToolMode, AppStatus, Point } from "./types";
 import { useGlobalShortcuts } from "./src/hooks/useGlobalShortcuts";
 import { useCanvasOperations } from "./src/hooks/useCanvasOperations";
@@ -29,7 +31,6 @@ import { useGlobalPolling } from "./src/hooks/useGlobalPolling";
 const App: React.FC = () => {
   // Get state and actions from stores
   const {
-    nodes,
     setNodes,
     deleteNodes,
     resetCanvasView,
@@ -37,9 +38,28 @@ const App: React.FC = () => {
     undo,
     redo,
     generateId,
-  } = useCanvasStore();
+  } = useCanvasStore.getState();
+  const nodes = useCanvasStore((state) => state.nodes);
 
   const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    const cleanupAssets = () => {
+      if (!disposed) {
+        assetStorage.cleanupExpiredAssets().catch((error) => {
+          console.warn('[AssetStorage] Cleanup failed:', error);
+        });
+      }
+    };
+
+    cleanupAssets();
+    const cleanupTimer = window.setInterval(cleanupAssets, 6 * 60 * 60 * 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(cleanupTimer);
+    };
+  }, []);
 
   useEffect(() => {
     // Check if already hydrated
@@ -97,6 +117,7 @@ const App: React.FC = () => {
     closeLightbox,
     apiKey, // Added apiKey
   } = useSelectionStore();
+  const { appMode } = useAgentStore();
 
   const selectedNodeIds = new Set(selectedIds);
 
@@ -372,11 +393,17 @@ const App: React.FC = () => {
             useSelectionStore.getState().setToolMode(ToolMode.PAN);
           }}
         />
-        <ControlPanel
-          onInitGenerations={handleInitGenerations}
-          onUpdateGeneration={handleUpdateGeneration}
-          onUpdateProgress={handleUpdateProgress}
-          onOpenBatchModal={handleOpenBatch}
+        {appMode !== 'agent' && (
+          <ControlPanel
+            onInitGenerations={handleInitGenerations}
+            onUpdateGeneration={handleUpdateGeneration}
+            onUpdateProgress={handleUpdateProgress}
+            onOpenBatchModal={handleOpenBatch}
+          />
+        )}
+        <AgentWorkspace
+          onOpenSettings={() => openModal("settings")}
+          onOpenHistory={() => openModal("history")}
         />
         <InpaintWindow />
         <ModalsContainer
@@ -464,11 +491,17 @@ const App: React.FC = () => {
 
         <MultiSelectToolbar />
 
-        <ControlPanel
-          onInitGenerations={handleInitGenerations}
-          onUpdateGeneration={handleUpdateGeneration}
-          onUpdateProgress={handleUpdateProgress}
-          onOpenBatchModal={handleOpenBatch}
+        {appMode !== 'agent' && (
+          <ControlPanel
+            onInitGenerations={handleInitGenerations}
+            onUpdateGeneration={handleUpdateGeneration}
+            onUpdateProgress={handleUpdateProgress}
+            onOpenBatchModal={handleOpenBatch}
+          />
+        )}
+        <AgentWorkspace
+          onOpenSettings={() => openModal("settings")}
+          onOpenHistory={() => openModal("history")}
         />
 
         <InpaintWindow />

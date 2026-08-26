@@ -31,6 +31,7 @@ COPY --from=builder /app/dist ./dist
 
 # Copy backend server code
 COPY server.cjs ./
+COPY server ./server
 
 # Expose port
 EXPOSE 3325

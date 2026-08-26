@@ -78,3 +78,96 @@ export interface CanvasState {
   offset: Point;
   scale: number;
 }
+
+export type AppMode = 'gallery' | 'agent';
+
+export interface AgentImageReference {
+  id: string;
+  assetId?: string;
+  dataUrl?: string;
+  label: string;
+  source: 'upload' | 'generated';
+  roundId?: string;
+}
+
+export interface AgentMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: number;
+  imageIds: string[];
+}
+
+export type AgentRoundStatus = 'running' | 'done' | 'error';
+
+export interface AgentRound {
+  id: string;
+  index: number;
+  prompt: string;
+  status: AgentRoundStatus;
+  createdAt: number;
+  finishedAt: number | null;
+  error: string | null;
+  inputImageIds: string[];
+  outputImageIds: string[];
+  responseId?: string;
+  responseOutput?: ResponsesOutputItem[];
+}
+
+export interface AgentConversation {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  rounds: AgentRound[];
+  messages: AgentMessage[];
+}
+
+export interface AgentWindowState {
+  x: number;
+  y: number;
+  pinned: boolean;
+  minimized: boolean;
+  showConversationList: boolean;
+  showReferences: boolean;
+}
+
+export interface ResponsesOutputTextAnnotation {
+  type?: string;
+  start_index?: number;
+  end_index?: number;
+  url?: string;
+  title?: string;
+}
+
+export interface ResponsesOutputContentItem {
+  type?: string;
+  text?: string;
+  annotations?: ResponsesOutputTextAnnotation[];
+}
+
+export interface ResponsesOutputItem {
+  id?: string;
+  type?: string;
+  status?: string;
+  call_id?: string;
+  name?: string;
+  arguments?: string;
+  output?: string;
+  content?: ResponsesOutputContentItem[];
+  result?:
+    | string
+    | {
+        b64_json?: string;
+        base64?: string;
+        image?: string;
+        data?: string;
+      };
+  image_url?: string;
+  url?: string;
+}
+
+export interface ResponsesApiResponse {
+  id?: string;
+  output?: ResponsesOutputItem[];
+}

@@ -7,6 +7,26 @@ const cleanUrl = (url: string) => url.replace(/\/$/, "");
 // Helper to ensure header values contain only ISO-8859-1 (ASCII) characters
 const sanitizeHeader = (val: string) => val.replace(/[^\x00-\x7F]/g, "").trim();
 
+export const uploadReferenceImagesApi = async (apiKey: string, images: string[]): Promise<string[]> => {
+    if (!apiKey) throw new Error("API Key is missing.");
+    const endpoint = `${cleanUrl(API_BASE_URL)}/reference/images`;
+    const authHeader = sanitizeHeader(apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`);
+    const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ images }),
+    });
+    if (!response.ok) await handleApiError(response, "参考图上传失败");
+    const payload = await response.json();
+    if (!Array.isArray(payload.urls) || payload.urls.length !== images.length) {
+        throw new Error("参考图上传结果不完整");
+    }
+    return payload.urls;
+};
+
 // Helper to determine model based on size
 export const getModelBySize = (size: string): string => {
     switch (size.toLowerCase()) {
@@ -100,7 +120,8 @@ const handleApiError = async (response: Response, fallbackMsg: string) => {
 
 export const generateImageApi = async (apiKey: string, payload: any): Promise<{ taskId: string, url?: string }> => {
     if (!apiKey) throw new Error("API Key is missing.");
-    const endpoint = `${cleanUrl(API_BASE_URL)}/generate`;
+    const isOfficialT3Model = /^Nano-Banana-Pro(?:-2K|-4K)?$/.test(String(payload.model || ''));
+    const endpoint = `${cleanUrl(API_BASE_URL)}/${isOfficialT3Model ? 'gemini/generate' : 'generate'}`;
     const authHeader = sanitizeHeader(apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`);
 
     const response = await fetch(endpoint, {
@@ -117,20 +138,26 @@ export const generateImageApi = async (apiKey: string, payload: any): Promise<{ 
     }
 
     const resJson = await response.json();
+    if (Array.isArray(resJson.images) && !resJson.data) {
+        resJson.data = resJson.images.map((image: any) =>
+            typeof image === 'string' ? { url: image } : image,
+        );
+    }
     // Support both async (taskId) and sync (url) returns
     if (resJson.url || resJson.image_url) {
         return { taskId: '', url: resJson.url || resJson.image_url };
     }
     const taskId =
+        resJson.data?.[0]?.task_id ||
         resJson.id ||
         resJson.task_id ||
         (typeof resJson.data === 'string' ? resJson.data : null) ||
         (resJson.data && resJson.data.task_id);
-    if (!taskId && !resJson.url) throw new Error("No Task ID or URL received from API.");
+    if (!taskId && !resJson.url && !resJson.image_url && !Array.isArray(resJson.data)) throw new Error("No Task ID or URL received from API.");
     return { taskId: taskId || '', ...resJson };
 };
 
-export const editImageApi = async (apiKey: string, payload: any): Promise<{ taskId: string }> => {
+export const editImageApi = async (apiKey: string, payload: any): Promise<{ taskId?: string; url?: string }> => {
     if (!apiKey) throw new Error("API Key is missing.");
     const endpoint = `${cleanUrl(API_BASE_URL)}/edit`;
     const authHeader = sanitizeHeader(apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`);
@@ -149,13 +176,19 @@ export const editImageApi = async (apiKey: string, payload: any): Promise<{ task
     }
 
     const resJson = await response.json();
+    if (Array.isArray(resJson.images) && !resJson.data) {
+        resJson.data = resJson.images;
+    }
+    if (resJson.url || resJson.image_url) {
+        return { url: resJson.url || resJson.image_url };
+    }
     const taskId =
         resJson.id ||
         resJson.task_id ||
         (typeof resJson.data === 'string' ? resJson.data : null) ||
         (resJson.data && resJson.data.task_id);
-    if (!taskId) throw new Error("No Task ID received from API.");
-    return { taskId };
+    if (!taskId && !Array.isArray(resJson.data)) throw new Error("No Task ID or URL received from API.");
+    return { taskId, url: Array.isArray(resJson.data) ? resJson.data[0] : undefined };
 };
 
 export const getTaskStatusApi = async (apiKey: string, taskId: string): Promise<TaskStatusResponse> => {

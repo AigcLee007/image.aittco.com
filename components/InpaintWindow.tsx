@@ -63,7 +63,8 @@ export const InpaintWindow: React.FC = () => {
     setBrushColor,
   } = useSelectionStore();
 
-  const { nodes, updateNode } = useCanvasStore();
+  const nodes = useCanvasStore((state) => state.nodes);
+  const updateNode = useCanvasStore((state) => state.updateNode);
   const { handleInitGenerations: onInitGenerations, handleUpdateGeneration: onUpdateGeneration } = useGenerationLogic();
 
   const [error, setError] = useState<string | null>(null);
@@ -158,8 +159,11 @@ export const InpaintWindow: React.FC = () => {
             mask_mode: maskMode,
           };
           const res = await editImageApi(apiKey, payload);
-          onUpdateGeneration(pid, null, undefined, res.taskId);
-          return res.taskId;
+          if (res.url) {
+            onUpdateGeneration(pid, res.url);
+            return res.url;
+          }
+          throw new Error('No URL received from edit API');
         }),
       );
 

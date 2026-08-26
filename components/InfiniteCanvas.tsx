@@ -81,7 +81,7 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
   // Store state
   const { nodes, canvasState, updateNode, moveNode } = useCanvasStore();
   const { selectedIds, select, toolMode, setToolMode, addReferenceImage, showTooltips, brushSize, brushColor } = useSelectionStore();
-  const selectedNodeIds = new Set(selectedIds);
+  const selectedNodeIds = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   // Custom hooks
   const { handleWheel } = useZoom();
@@ -93,13 +93,14 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
   // Virtualization Hook - Expand buffer for smoother panning
   // We keep a larger set of nodes in the React tree (renderedNodes)
   // but we detect the exact viewport (isInViewport) for precise optimization
-  const RENDER_BUFFER = lowEndMode ? 900 : 2000; 
+  const RENDER_BUFFER = lowEndMode ? 400 : 700;
   const renderedNodes = useViewportCulling({
     nodes,
     canvasState,
     stageSize,
     buffer: RENDER_BUFFER
   });
+  const renderedNodeIds = renderedNodes.map(node => node.id).join('|');
 
   // Calculate the exact viewport in canvas coordinates for per-node optimization (pause/cache)
   const viewportX = -canvasState.offset.x / canvasState.scale;
@@ -197,7 +198,7 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
 
     transformerRef.current.nodes(selectedNodes);
     transformerRef.current.getLayer()?.batchDraw();
-  }, [selectedNodeIds, nodes, renderedNodes]); // Depend on renderedNodes so transformer updates on scroll
+  }, [selectedNodeIds, nodes, renderedNodeIds]);
 
   // ==================== Node Event Handlers ====================
   const handleNodeClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>, node: NodeData) => {
@@ -213,6 +214,7 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
   }, [toolMode, setToolMode, select]);
 
   const handleNodePointerDown = useCallback((e: Konva.KonvaEventObject<PointerEvent>, node: NodeData) => {
+    const { canvasState } = useCanvasStore.getState();
     if (toolMode === ToolMode.INPAINT) {
         e.cancelBubble = true;
         
@@ -232,7 +234,7 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
             updateNode(node.id, { maskStrokes: newStrokes });
         }
     }
-  }, [toolMode, selectedIds, select, canvasState, updateNode, brushSize, brushColor, clampMaskPoint]);
+  }, [toolMode, selectedIds, select, updateNode, brushSize, brushColor, clampMaskPoint]);
 
   const handleNodeDragStart = useCallback((e: Konva.KonvaEventObject<DragEvent>, node: NodeData) => {
     if (node.locked) {
@@ -516,13 +518,13 @@ const InfiniteCanvas: React.FC<InfiniteCanvasProps> = ({
                   isSelected={selectedNodeIds.has(node.id)}
                   isInViewport={isInViewport} // NEW PROP
                   toolMode={toolMode}
-                  onClick={(e) => handleNodeClick(e, node)}
-                  onPointerDown={(e) => handleNodePointerDown(e, node as NodeData)}
-                  onDragStart={(e) => handleNodeDragStart(e, node)}
-                  onDragEnd={(e) => handleNodeDragEnd(e, node)}
-                  onContextMenu={(e) => handleContextMenuEvent(e, node)}
-                  onDoubleClick={() => handleNodeDoubleClickEvent(node)}
-                  onMouseEnter={(e) => handleNodeMouseEnter(e, node)}
+                  onClick={handleNodeClick}
+                  onPointerDown={handleNodePointerDown}
+                  onDragStart={handleNodeDragStart}
+                  onDragEnd={handleNodeDragEnd}
+                  onContextMenu={handleContextMenuEvent}
+                  onDoubleClick={handleNodeDoubleClickEvent}
+                  onMouseEnter={handleNodeMouseEnter}
                   onMouseLeave={handleNodeMouseLeave}
                 />
               );

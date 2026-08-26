@@ -6,7 +6,7 @@ import { NodeData, ToolMode, Point } from '../../types';
 import { useToast } from '../context/ToastContext';
 
 export const useImageProcessor = () => {
-    const { addNode, generateId, canvasState } = useCanvasStore();
+    const { addNodes, generateId } = useCanvasStore.getState();
     const { selectAll, setToolMode } = useSelectionStore();
     const { error: toastError } = useToast();
 
@@ -112,6 +112,7 @@ export const useImageProcessor = () => {
             return;
         }
     
+        const { canvasState } = useCanvasStore.getState();
         const count = loadedNodes.length; const cols = Math.ceil(Math.sqrt(count)); const gap = 40; const cellSize = 512;
         let cx, cy;
         if (centerPoint) { cx = (centerPoint.x - canvasState.offset.x) / canvasState.scale; cy = (centerPoint.y - canvasState.offset.y) / canvasState.scale; }
@@ -123,10 +124,10 @@ export const useImageProcessor = () => {
           const cellCenterX = startX + col * (cellSize + gap) + cellSize / 2; const cellCenterY = startY + row * (cellSize + gap) + cellSize / 2;
           return { ...node, x: cellCenterX - node.width / 2, y: cellCenterY - node.height / 2 };
         });
-        positionedNodes.forEach(n => addNode(n));
+        addNodes(positionedNodes);
         setToolMode(ToolMode.SELECT);
         selectAll(positionedNodes.map(n => n.id));
-      }, [canvasState, generateId, addNode, setToolMode, selectAll]);
+      }, [generateId, addNodes, setToolMode, selectAll]);
 
       const handleUpload = useCallback((files: FileList) => {
         const fileArray: File[] = []; for (let i = 0; i < files.length; i++) fileArray.push(files[i]);

@@ -10,6 +10,12 @@ export default defineConfig(({ mode }) => {
       port: 3322,
       host: '0.0.0.0',
       proxy: {
+        '/api-proxy': {
+          target: 'https://max.aittco.com',
+          changeOrigin: true,
+          secure: false,
+          rewrite: (path) => path.replace(/^\/api-proxy/, ''),
+        },
         '/api': {
           target: 'http://localhost:3325',
           changeOrigin: true,

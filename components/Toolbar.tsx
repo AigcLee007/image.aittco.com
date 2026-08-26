@@ -3,6 +3,7 @@ import React, { useRef, useState } from 'react';
 import { ToolMode } from '../types';
 import { useSelectionStore } from '../src/store/selectionStore';
 import { useCanvasStore } from '../src/store/canvasStore';
+import { useAgentStore } from '../src/store/agentStore';
 import { Hand, MousePointer2, Sparkles, UploadCloud, Undo2, Redo2, Trash2, Settings, History, Grid, ScanSearch, DownloadCloud, Box, Loader2, HelpCircle, Clapperboard, ImagePlus, Eye, MessageSquare, Layers, ChevronDown, ChevronUp, Eraser } from 'lucide-react';
 
 interface ToolbarProps {
@@ -32,6 +33,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
 }) => {
   const { toolMode, setToolMode, apiKey, showLayers, toggleLayers, showTooltips, toggleTooltips } = useSelectionStore();
   const { undo, redo } = useCanvasStore();
+  const { appMode, setAppMode } = useAgentStore();
   
   const hasKey = !!apiKey;
   
@@ -133,6 +135,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
         {/* 4. Generators */}
         <button 
             onClick={() => {
+              setAppMode('gallery');
               setToolMode(ToolMode.GENERATE);
             }} 
             className={`${dockItemClass} ${toolMode === ToolMode.GENERATE ? 'bg-linear-to-tr from-purple-500 to-blue-500 text-white shadow-lg shadow-purple-500/30' : ''}`}
@@ -143,6 +146,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
 
         <button 
             onClick={() => {
+              setAppMode('gallery');
               setToolMode(ToolMode.VIDEO);
             }}
             className={`${dockItemClass} ${toolMode === ToolMode.VIDEO ? 'bg-linear-to-tr from-pink-500 to-orange-500 text-white shadow-lg shadow-pink-500/30' : ''}`}
@@ -153,12 +157,21 @@ const Toolbar: React.FC<ToolbarProps> = ({
 
         <button
             onClick={() => {
+              setAppMode('gallery');
               setToolMode(ToolMode.INPAINT);
             }}
             className={`${dockItemClass} ${toolMode === ToolMode.INPAINT ? 'bg-linear-to-tr from-violet-500 to-indigo-500 text-white shadow-lg shadow-violet-500/30' : ''}`}
             title="局部重绘 (I)"
         >
             <Eraser size={21} strokeWidth={1.6} />
+        </button>
+
+        <button
+            onClick={() => setAppMode(appMode === 'agent' ? 'gallery' : 'agent')}
+            className={`${dockItemClass} ${appMode === 'agent' ? 'bg-linear-to-tr from-cyan-400 to-blue-500 text-white shadow-lg shadow-cyan-500/30' : ''}`}
+            title="Agent 模式"
+        >
+            <MessageSquare size={21} strokeWidth={1.6} />
         </button>
 
         {/* 5. Collection Stack (Features) */}

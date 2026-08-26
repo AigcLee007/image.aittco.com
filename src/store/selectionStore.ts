@@ -15,6 +15,29 @@ export interface ReferenceImage {
   type: 'blob' | 'url';
 }
 
+const selectionStorage = {
+  getItem: (key: string) => localStorage.getItem(key),
+  removeItem: (key: string) => localStorage.removeItem(key),
+  setItem: (key: string, value: string) => {
+    try {
+      localStorage.setItem(key, value);
+    } catch (error: any) {
+      const isQuotaError = error?.name === 'QuotaExceededError' || error?.code === 22;
+      if (!isQuotaError) throw error;
+
+      // Preserve lightweight settings even when an older oversized snapshot
+      // is still occupying the browser's localStorage quota.
+      try {
+        const persisted = JSON.parse(value);
+        if (persisted?.state) delete persisted.state.referenceImages;
+        localStorage.setItem(key, JSON.stringify(persisted));
+      } catch {
+        // Persistence is optional; runtime canvas state must keep working.
+      }
+    }
+  },
+};
+
 interface SelectionStore {
   // State
   selectedIds: string[];
@@ -510,12 +533,16 @@ export const useSelectionStore = create<SelectionStore>()(
     })),
     {
       name: 'selection-storage', // Key in localStorage
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() => selectionStorage),
       partialize: (state) => ({
         // Whitelist fields to persist
         apiKey: state.apiKey,
         prompt: state.prompt,
-        referenceImages: state.referenceImages,
+        referenceImages: state.referenceImages.map(({ blob, src, ...image }) => ({
+          ...image,
+          // Blob data lives in IndexedDB. Remote URLs remain small enough to persist.
+          src: image.assetId || src.startsWith('data:') ? '' : src,
+        })),
         videoModel: state.videoModel,
         imageModel: state.imageModel,
         aspectRatio: state.aspectRatio,

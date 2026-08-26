@@ -1,6 +1,7 @@
 import { useQueries } from '@tanstack/react-query';
 import { useCanvasStore } from '../store/canvasStore';
 import { checkTaskStatus, checkVideoTaskStatus, findAllUrlsInObject } from '../services/api';
+import { extractNanoBananaLine1ImageUrl } from '../services/nanoBananaLine1Protocol';
 import { useEffect, useMemo, useRef } from 'react';
 import { useToast } from '../context/ToastContext';
 
@@ -60,7 +61,9 @@ export const useGlobalPolling = (
 
             const resultUrls: string[] = [];
             if (isSuccess) {
-                findAllUrlsInObject(data, resultUrls);
+                const lineOneImageUrl = extractNanoBananaLine1ImageUrl(data);
+                if (lineOneImageUrl) resultUrls.push(lineOneImageUrl);
+                else findAllUrlsInObject(data, resultUrls);
             }
 
             return {

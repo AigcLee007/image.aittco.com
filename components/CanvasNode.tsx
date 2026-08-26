@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Group, Image as KonvaImage, Line as KonvaLine, Rect, Text as KonvaText } from 'react-konva';
 import Konva from 'konva';
 import useImage from 'use-image';
@@ -10,13 +10,13 @@ interface CanvasNodeProps {
   isSelected: boolean;
   isInViewport: boolean;
   toolMode: ToolMode;
-  onClick: (e: Konva.KonvaEventObject<MouseEvent>) => void;
-  onPointerDown?: (e: Konva.KonvaEventObject<PointerEvent>) => void;
-  onDragStart: (e: Konva.KonvaEventObject<DragEvent>) => void;
-  onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => void;
-  onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>) => void;
-  onDoubleClick: () => void;
-  onMouseEnter: (e: Konva.KonvaEventObject<MouseEvent>) => void;
+  onClick: (e: Konva.KonvaEventObject<MouseEvent>, node: NodeData) => void;
+  onPointerDown?: (e: Konva.KonvaEventObject<PointerEvent>, node: NodeData) => void;
+  onDragStart: (e: Konva.KonvaEventObject<DragEvent>, node: NodeData) => void;
+  onDragEnd: (e: Konva.KonvaEventObject<DragEvent>, node: NodeData) => void;
+  onContextMenu: (e: Konva.KonvaEventObject<PointerEvent>, node: NodeData) => void;
+  onDoubleClick: (node: NodeData) => void;
+  onMouseEnter: (e: Konva.KonvaEventObject<MouseEvent>, node: NodeData) => void;
   onMouseLeave: (e: Konva.KonvaEventObject<MouseEvent>) => void;
 }
 
@@ -341,6 +341,12 @@ const CanvasNode: React.FC<CanvasNodeProps> = React.memo(
     const [statusText, setStatusText] = useState('Initializing...');
     const [isResourceLoaded, setIsResourceLoaded] = useState(false);
     const groupRef = useRef<Konva.Group>(null);
+    const handleResourceLoaded = useCallback(() => setIsResourceLoaded(true), []);
+    const progressStartRef = useRef(Date.now());
+
+    useEffect(() => {
+      progressStartRef.current = Date.now();
+    }, [node.loading, node.id]);
 
     useEffect(() => {
       // Source swap (remote URL -> cached blob URL) must invalidate cache readiness.
@@ -353,7 +359,11 @@ const CanvasNode: React.FC<CanvasNodeProps> = React.memo(
         return;
       }
 
-      const startTime = Date.now();
+      // Offscreen placeholders do not need a 100ms timer; global polling
+      // still updates their task state and the timer starts when they return.
+      if (!isInViewport) return;
+
+      const startTime = progressStartRef.current;
       const duration = 70000;
       setProgress(1);
       setStatusText(getProgressText(1));
@@ -372,16 +382,18 @@ const CanvasNode: React.FC<CanvasNodeProps> = React.memo(
         p = Math.min(p, 99);
         setProgress(p);
         setStatusText(getProgressText(p));
-      }, 100);
+      }, 250);
 
       return () => window.clearInterval(interval);
-    }, [node.loading, node.id]);
+    }, [node.loading, node.id, isInViewport]);
 
     useEffect(() => {
       if (!groupRef.current) return;
       const group = groupRef.current;
       // Always invalidate stale cache first, especially after src swaps.
       group.clearCache();
+
+      if (!isInViewport) return;
 
       const isQuiet = !isSelected && !node.loading && !node.dragging && isResourceLoaded;
       if (!(isQuiet && node.type === 'IMAGE')) {
@@ -424,15 +436,15 @@ const CanvasNode: React.FC<CanvasNodeProps> = React.memo(
         height={node.height}
         draggable={isDraggable}
         opacity={node.opacity ?? 1}
-        onClick={onClick}
-        onPointerDown={onPointerDown}
-        onTap={(e) => onClick(e as unknown as Konva.KonvaEventObject<MouseEvent>)}
-        onDragStart={onDragStart}
-        onDragEnd={onDragEnd}
-        onContextMenu={onContextMenu}
-        onDblClick={onDoubleClick}
-        onDblTap={onDoubleClick}
-        onMouseEnter={onMouseEnter}
+        onClick={(e) => onClick(e, node)}
+        onPointerDown={(e) => onPointerDown?.(e, node)}
+        onTap={(e) => onClick(e as unknown as Konva.KonvaEventObject<MouseEvent>, node)}
+        onDragStart={(e) => onDragStart(e, node)}
+        onDragEnd={(e) => onDragEnd(e, node)}
+        onContextMenu={(e) => onContextMenu(e, node)}
+        onDblClick={() => onDoubleClick(node)}
+        onDblTap={() => onDoubleClick(node)}
+        onMouseEnter={(e) => onMouseEnter(e, node)}
         onMouseLeave={onMouseLeave}
         perfectDrawEnabled={false}
         shadowForStrokeEnabled={false}
@@ -451,7 +463,7 @@ const CanvasNode: React.FC<CanvasNodeProps> = React.memo(
         {node.type === 'VIDEO' ? (
           <VideoNode node={node} progress={progress} statusText={statusWithTask} isInViewport={isInViewport} />
         ) : (
-          <ImageNode node={node} progress={progress} statusText={statusWithTask} onLoad={() => setIsResourceLoaded(true)} />
+          <ImageNode node={node} progress={progress} statusText={statusWithTask} onLoad={handleResourceLoaded} />
         )}
 
         {isSelected && (
